@@ -1,0 +1,48 @@
+import bstd.io;
+
+class Vec2 {
+    int x;
+    int y;
+
+    new(x: int, y: int) {
+        this.x = x;
+        this.y = y;
+    }
+
+    Vec2 operator+(Vec2 a, Vec2 b) {
+        return new Vec2(a.x + b.x, a.y + b.y);
+    }
+}
+
+class Animal {
+    string name;
+
+    new(name: string) {
+        this.name = name;
+    }
+
+    string Tag() {
+        return this.name;
+    }
+}
+
+class Cat : Animal {
+    new(name: string) : base(name) {
+    }
+
+    string Speak() {
+        return "Meow";
+    }
+}
+
+void Main() {
+    var a = new Vec2(1, 2);
+    var b = new Vec2(3, 4);
+    var c = a + b;
+    print(c.x);
+    print(c.y);
+
+    var cat = new Cat("Mimi");
+    print(cat.Tag());
+    print(cat.Speak());
+}

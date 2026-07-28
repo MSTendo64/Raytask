@@ -1,0 +1,32 @@
+// bstd.string — string helpers (instance methods are built-in on string)
+
+export class string {
+    property Length: int { get; }
+
+    string ToUpper() { return ""; }
+    string ToLower() { return ""; }
+    string Trim() { return ""; }
+    string TrimStart() { return ""; }
+    string TrimEnd() { return ""; }
+    bool Contains(s: string) { return false; }
+    bool StartsWith(s: string) { return false; }
+    bool EndsWith(s: string) { return false; }
+    int IndexOf(s: string) { return -1; }
+    string Replace(a: string, b: string) { return ""; }
+    string Substring(start: int) { return ""; }
+    string Substring(start: int, len: int) { return ""; }
+    string[] Split(sep: string) { return null; }
+
+    export static string Join(sep: string, parts: string[]) { return ""; }
+    export static bool IsNullOrEmpty(s: string) { return false; }
+}
+
+export class StringBuilder {
+    property Length: int { get; }
+
+    new() {}
+
+    void Append(s: string) {}
+    string ToString() { return ""; }
+    void Clear() {}
+}

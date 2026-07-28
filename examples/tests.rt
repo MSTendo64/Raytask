@@ -1,0 +1,23 @@
+import bstd.io;
+
+int Add(a: int, b: int) {
+    return a + b;
+}
+
+int Double(x: int) => x * 2;
+
+[test]
+void TestAddition() {
+    assert(Add(2, 3) == 5);
+    assert(Add(-1, 1) == 0);
+    assert(Add(0, 0) == 0);
+}
+
+[test]
+void TestDouble() {
+    assert(Double(21) == 42);
+}
+
+void Main() {
+    print("Run with: raytask test examples/tests.rt");
+}

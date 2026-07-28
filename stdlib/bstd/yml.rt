@@ -1,0 +1,7 @@
+// bstd.yml
+
+export class Yaml {
+    export static dyn Parse(yaml: string);
+    export static string Serialize(value: dyn);
+    export static dyn Deserialize(yaml: string);
+}

@@ -1,0 +1,61 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# RayTask build outputs
+**/dist/
+**/*.rtbc
+**/*.c
+!**/*.c.template
+**/*.exe
+**/*.efi
+**/*.elf
+**/*.macho
+**/*.bin
+**/*.o
+**/*.obj
+**/*.a
+**/*.lib
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.wasm
+**/*.js
+!**/native_rt/**
+
+# Local packages / registry cache
+.raytask/
+registry/
+!registry/index.json
+
+# Generated API docs (from `raytask doc`)
+docs/api/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+credentials.json
+
+# Test / temp
+*.tmp
+*.temp
+*.log
+/tmp/

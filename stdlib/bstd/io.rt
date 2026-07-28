@@ -1,0 +1,6 @@
+// bstd.io — console I/O (VM natives)
+
+export void print(msg: dyn);
+export void write(msg: dyn);
+export string readLine();
+export char readKey();

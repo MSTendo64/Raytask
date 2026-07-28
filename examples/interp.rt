@@ -1,0 +1,6 @@
+void Main() {
+    var x = 10;
+    var y = 32;
+    print($"sum={x + y}");
+    print($"x={x}");
+}

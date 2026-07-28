@@ -1,0 +1,21 @@
+// Async/await event-loop demo
+
+async int Fetch() {
+    await Task.Delay(20);
+    return 42;
+}
+
+async void Main() {
+    print("start");
+    var a = await Fetch();
+    assertEq(a, 42);
+
+    var t1 = Task.Delay(10);
+    var t2 = Task.Delay(15);
+    await Task.WhenAll([t1, t2]);
+
+    var ran = await Task.Run(() => 7);
+    assertEq(ran, 7);
+
+    print("done");
+}

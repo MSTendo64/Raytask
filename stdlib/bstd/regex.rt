@@ -1,0 +1,9 @@
+// bstd.regex
+
+export class Regex {
+    string[] FindAll(text: string) { return null; }
+    bool IsMatch(text: string) { return false; }
+    string Replace(text: string, replacement: string) { return ""; }
+}
+
+export Regex regex(pattern: string);

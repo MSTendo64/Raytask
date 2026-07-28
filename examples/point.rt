@@ -1,0 +1,30 @@
+import bstd.io;
+
+struct Point {
+    int x;
+    int y;
+
+    new(x: int, y: int) {
+        this.x = x;
+        this.y = y;
+    }
+
+    int Manhattan(Point other) {
+        var dx = this.x - other.x;
+        if (dx < 0) {
+            dx = -dx;
+        }
+        var dy = this.y - other.y;
+        if (dy < 0) {
+            dy = -dy;
+        }
+        return dx + dy;
+    }
+}
+
+void Main() {
+    var p1 = new Point(0, 0);
+    var p2 = new Point(3, 4);
+    var d = p1.Manhattan(p2);
+    print(d);
+}

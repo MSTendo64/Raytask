@@ -1,0 +1,28 @@
+// GC demo: mark-sweep + finalizers + Gc.Collect / Gc.Stats
+
+class Resource {
+    new() {}
+    ~new() {
+        print("finalize Resource");
+    }
+}
+
+void Main() {
+    for (var i = 0; i < 30; i++) {
+        var r = new Resource();
+        var tmp = [i, i + 1, i + 2];
+    }
+
+    var freed = Gc.Collect();
+    var stats = Gc.Stats();
+    var collections = stats["collections"];
+    var live = stats["live"];
+    print("collections=");
+    print(collections);
+    print("freed=");
+    print(freed);
+    print("live=");
+    print(live);
+    assert(collections >= 1);
+    print("gc ok");
+}

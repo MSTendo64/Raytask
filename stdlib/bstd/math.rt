@@ -1,0 +1,27 @@
+// bstd.math
+
+export class Math {
+    export static double PI;
+    export static double E;
+
+    export static dyn Abs(x: dyn);
+    export static double Sqrt(x: double);
+    export static double Pow(a: double, b: double);
+    export static double Floor(x: double);
+    export static double Ceil(x: double);
+    export static double Round(x: double);
+    export static double Min(a: double, b: double);
+    export static double Max(a: double, b: double);
+    export static double Sin(x: double);
+    export static double Cos(x: double);
+    export static double Tan(x: double);
+    export static double Log(x: double);
+    export static double Exp(x: double);
+}
+
+export class Random {
+    export static int Next();
+    export static int Next(max: int);
+    export static int Next(min: int, max: int);
+    export static double NextDouble();
+}

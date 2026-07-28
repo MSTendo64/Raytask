@@ -1,0 +1,14 @@
+void Main() {
+  int n = 10;
+  var add = (x: int) => x + n;
+  print(add(5));
+
+  var make = (seed: int) => (x: int) => x + seed;
+  var f = make(100);
+  print(f(7));
+
+  var xs = new List<int> { 1, 2, 3, 4, 5 };
+  int threshold = 2;
+  var filtered = xs.Where((x) => x > threshold);
+  print(filtered);
+}

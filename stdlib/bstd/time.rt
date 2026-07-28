@@ -1,0 +1,11 @@
+// bstd.time
+
+export class DateTime {
+    property Ticks: long { get; }
+    property Utc: bool { get; }
+
+    export static DateTime Now;
+    export static DateTime UtcNow;
+
+    string ToString() { return ""; }
+}

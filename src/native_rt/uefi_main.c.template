@@ -1,0 +1,339 @@
+/* RayTask UEFI freestanding runtime — {{APP_NAME}}
+ * Mini RTBC interpreter (subset): Constant, locals, arith, jumps, Print, Call, Return, Halt.
+ * Build (example):
+ *   clang -target x86_64-unknown-windows -ffreestanding -fno-stack-protector \
+ *         -mno-red-zone -nostdlib -Wl,-entry:efi_main -o app.efi app_uefi.c
+ */
+typedef unsigned long long UINT64;
+typedef long long INT64;
+typedef unsigned int UINT32;
+typedef unsigned short CHAR16;
+typedef unsigned char UINT8;
+typedef UINT64 EFI_STATUS;
+typedef void* EFI_HANDLE;
+
+#define EFI_SUCCESS 0
+#define CT_NULL 0
+#define CT_BOOL 1
+#define CT_INT  2
+#define CT_STR  3
+
+typedef struct EFI_TABLE_HEADER {
+    UINT64 Signature;
+    UINT32 Revision;
+    UINT32 HeaderSize;
+    UINT32 CRC32;
+    UINT32 Reserved;
+} EFI_TABLE_HEADER;
+
+struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+typedef EFI_STATUS (*EFI_TEXT_STRING)(struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* This, CHAR16* String);
+
+typedef struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
+    void* Reset;
+    EFI_TEXT_STRING OutputString;
+    void* TestString;
+    void* QueryMode;
+    void* SetMode;
+    void* SetAttribute;
+    void* ClearScreen;
+    void* SetCursorPosition;
+    void* EnableCursor;
+    void* Mode;
+} EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+
+typedef struct EFI_SYSTEM_TABLE {
+    EFI_TABLE_HEADER Hdr;
+    CHAR16* FirmwareVendor;
+    UINT32 FirmwareRevision;
+    EFI_HANDLE ConsoleInHandle;
+    void* ConIn;
+    EFI_HANDLE ConsoleOutHandle;
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* ConOut;
+    EFI_HANDLE StandardErrorHandle;
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* StdErr;
+} EFI_SYSTEM_TABLE;
+
+{{RTBC_ARRAY}}
+
+/* ---- Simplified program tables (filled by NativeCodeGen) ---- */
+{{UEFI_PROGRAM}}
+
+static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* gConOut;
+
+static void efi_print_utf16(CHAR16* s) {
+    if (gConOut && gConOut->OutputString) {
+        gConOut->OutputString(gConOut, s);
+    }
+}
+
+static void efi_print_ascii(const char* s) {
+    CHAR16 buf[512];
+    unsigned i = 0;
+    if (!s) s = "null";
+    while (*s && i + 1 < 512) {
+        buf[i++] = (CHAR16)(unsigned char)*s++;
+    }
+    buf[i++] = '\r';
+    buf[i++] = '\n';
+    buf[i] = 0;
+    efi_print_utf16(buf);
+}
+
+static void efi_print_i64(INT64 n) {
+    char tmp[32];
+    char* p = tmp + 31;
+    int neg = 0;
+    *p = 0;
+    if (n < 0) { neg = 1; n = -n; }
+    if (n == 0) { *--p = '0'; }
+    while (n > 0) {
+        *--p = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    if (neg) *--p = '-';
+    efi_print_ascii(p);
+}
+
+/* Value on mini-VM stack */
+typedef struct {
+    int tag;
+    INT64 i;
+    const char* s;
+} V;
+
+#define STACK_MAX 256
+#define LOCAL_MAX 64
+#define FRAME_MAX 32
+
+typedef struct {
+    unsigned ip;
+    unsigned code_off;
+    unsigned code_len;
+    V locals[LOCAL_MAX];
+    unsigned local_count;
+} Frame;
+
+static V stack[STACK_MAX];
+static int sp;
+static Frame frames[FRAME_MAX];
+static int fp;
+
+static void push(V v) {
+    if (sp < STACK_MAX) stack[sp++] = v;
+}
+static V pop(void) {
+    V z = {CT_NULL, 0, 0};
+    if (sp > 0) return stack[--sp];
+    return z;
+}
+static V peek(void) {
+    V z = {CT_NULL, 0, 0};
+    if (sp > 0) return stack[sp - 1];
+    return z;
+}
+
+static INT64 as_int(V v) {
+    if (v.tag == CT_INT) return v.i;
+    if (v.tag == CT_BOOL) return v.i;
+    return 0;
+}
+
+static int truthy(V v) {
+    if (v.tag == CT_NULL) return 0;
+    if (v.tag == CT_BOOL || v.tag == CT_INT) return v.i != 0;
+    if (v.tag == CT_STR) return v.s && v.s[0];
+    return 0;
+}
+
+static unsigned char read8(Frame* f) {
+    if (f->ip >= f->code_len) return 0;
+    return uefi_code[f->code_off + f->ip++];
+}
+
+static unsigned short read16(Frame* f) {
+    unsigned short hi = read8(f);
+    unsigned short lo = read8(f);
+    return (unsigned short)((hi << 8) | lo);
+}
+
+/* Opcode numbers must match RayTask Op enum in bytecode.rs */
+enum {
+    OP_CONSTANT = 1, OP_NULL, OP_TRUE, OP_FALSE, OP_POP,
+    OP_GET_LOCAL, OP_SET_LOCAL, OP_GET_GLOBAL, OP_SET_GLOBAL, OP_DEFINE_GLOBAL,
+    OP_GET_PROPERTY, OP_SET_PROPERTY, OP_GET_INDEX, OP_SET_INDEX,
+    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
+    OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
+    OP_AND, OP_OR, OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_SHL, OP_SHR,
+    OP_NEG, OP_NOT, OP_BIT_NOT, OP_NULL_COALESCE,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_JUMP_IF_TRUE, OP_LOOP,
+    OP_CALL, OP_RETURN, OP_NEW_OBJECT, OP_NEW_ARRAY,
+    OP_PRINT, OP_DUP, OP_HALT
+};
+
+static void run_chunk(unsigned code_off, unsigned code_len, unsigned local_count) {
+    if (fp >= FRAME_MAX) return;
+    Frame* f = &frames[fp++];
+    f->ip = 0;
+    f->code_off = code_off;
+    f->code_len = code_len;
+    f->local_count = local_count;
+    {
+        unsigned i;
+        for (i = 0; i < LOCAL_MAX; i++) {
+            f->locals[i].tag = CT_NULL;
+            f->locals[i].i = 0;
+            f->locals[i].s = 0;
+        }
+    }
+
+    for (;;) {
+        if (f->ip >= f->code_len) break;
+        unsigned char op = read8(f);
+        switch (op) {
+        case OP_CONSTANT: {
+            unsigned char idx = read8(f);
+            V v = {CT_NULL, 0, 0};
+            if (idx < uefi_const_count) {
+                v.tag = uefi_const_tag[idx];
+                v.i = uefi_const_i[idx];
+                if (v.tag == CT_STR && uefi_const_i[idx] < (INT64)uefi_str_count) {
+                    v.s = uefi_strings[uefi_const_i[idx]];
+                }
+            }
+            push(v);
+            break;
+        }
+        case OP_NULL: { V v = {CT_NULL, 0, 0}; push(v); break; }
+        case OP_TRUE: { V v = {CT_BOOL, 1, 0}; push(v); break; }
+        case OP_FALSE: { V v = {CT_BOOL, 0, 0}; push(v); break; }
+        case OP_POP: pop(); break;
+        case OP_DUP: push(peek()); break;
+        case OP_GET_LOCAL: {
+            unsigned char slot = read8(f);
+            if (slot < LOCAL_MAX) push(f->locals[slot]);
+            else { V v = {CT_NULL, 0, 0}; push(v); }
+            break;
+        }
+        case OP_SET_LOCAL: {
+            unsigned char slot = read8(f);
+            V v = peek();
+            if (slot < LOCAL_MAX) f->locals[slot] = v;
+            break;
+        }
+        case OP_ADD: {
+            V b = pop(), a = pop();
+            if (a.tag == CT_STR || b.tag == CT_STR) {
+                /* string concat not fully supported — print ints */
+                V v = {CT_INT, as_int(a) + as_int(b), 0};
+                push(v);
+            } else {
+                V v = {CT_INT, as_int(a) + as_int(b), 0};
+                push(v);
+            }
+            break;
+        }
+        case OP_SUB: { V b = pop(), a = pop(); V v = {CT_INT, as_int(a) - as_int(b), 0}; push(v); break; }
+        case OP_MUL: { V b = pop(), a = pop(); V v = {CT_INT, as_int(a) * as_int(b), 0}; push(v); break; }
+        case OP_DIV: {
+            V b = pop(), a = pop();
+            INT64 d = as_int(b);
+            V v = {CT_INT, d ? as_int(a) / d : 0, 0};
+            push(v);
+            break;
+        }
+        case OP_MOD: {
+            V b = pop(), a = pop();
+            INT64 d = as_int(b);
+            V v = {CT_INT, d ? as_int(a) % d : 0, 0};
+            push(v);
+            break;
+        }
+        case OP_EQ: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) == as_int(b), 0}; push(v); break; }
+        case OP_NE: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) != as_int(b), 0}; push(v); break; }
+        case OP_LT: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) < as_int(b), 0}; push(v); break; }
+        case OP_LE: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) <= as_int(b), 0}; push(v); break; }
+        case OP_GT: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) > as_int(b), 0}; push(v); break; }
+        case OP_GE: { V b = pop(), a = pop(); V v = {CT_BOOL, as_int(a) >= as_int(b), 0}; push(v); break; }
+        case OP_NEG: { V a = pop(); V v = {CT_INT, -as_int(a), 0}; push(v); break; }
+        case OP_NOT: { V a = pop(); V v = {CT_BOOL, !truthy(a), 0}; push(v); break; }
+        case OP_JUMP: {
+            unsigned short off = read16(f);
+            f->ip += off;
+            break;
+        }
+        case OP_JUMP_IF_FALSE: {
+            unsigned short off = read16(f);
+            V c = pop();
+            if (!truthy(c)) f->ip += off;
+            break;
+        }
+        case OP_JUMP_IF_TRUE: {
+            unsigned short off = read16(f);
+            V c = pop();
+            if (truthy(c)) f->ip += off;
+            break;
+        }
+        case OP_LOOP: {
+            unsigned short off = read16(f);
+            if (f->ip >= off) f->ip -= off;
+            break;
+        }
+        case OP_PRINT: {
+            V v = pop();
+            if (v.tag == CT_STR) efi_print_ascii(v.s ? v.s : "");
+            else if (v.tag == CT_BOOL) efi_print_ascii(v.i ? "true" : "false");
+            else if (v.tag == CT_INT) efi_print_i64(v.i);
+            else efi_print_ascii("null");
+            break;
+        }
+        case OP_RETURN: {
+            V v = {CT_NULL, 0, 0};
+            if (sp > 0) v = pop();
+            fp--;
+            if (fp <= 0) return;
+            push(v);
+            f = &frames[fp - 1];
+            break;
+        }
+        case OP_HALT:
+            return;
+        case OP_CALL: {
+            /* arity byte — skip for MVP */
+            (void)read8(f);
+            pop(); /* callee */
+            break;
+        }
+        /* skip unsupported with best-effort operand consumption */
+        case OP_GET_GLOBAL:
+        case OP_SET_GLOBAL:
+        case OP_DEFINE_GLOBAL:
+        case OP_GET_PROPERTY:
+        case OP_SET_PROPERTY:
+            (void)read8(f);
+            break;
+        default:
+            /* unknown / extended ops: stop */
+            return;
+        }
+    }
+    fp--;
+}
+
+EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
+    (void)ImageHandle;
+    gConOut = 0;
+    if (SystemTable) gConOut = SystemTable->ConOut;
+    sp = 0;
+    fp = 0;
+    efi_print_ascii("RayTask UEFI — {{APP_NAME}}");
+    if (uefi_code_len > 0) {
+        run_chunk(0, uefi_code_len, uefi_local_count);
+    }
+    return EFI_SUCCESS;
+}
+
+/* Alias for some toolchains */
+EFI_STATUS EfiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
+    return efi_main(ImageHandle, SystemTable);
+}

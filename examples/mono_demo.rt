@@ -1,0 +1,20 @@
+T Id<T>(v: T) => v;
+
+class Box<T> {
+    T value;
+
+    new(v: T) {
+        this.value = v;
+    }
+
+    T Get() => this.value;
+}
+
+void Main() {
+    assertEq(Id<int>(42), 42);
+    assertEq(Id<string>("ok"), "ok");
+
+    var b = new Box<int>(7);
+    assertEq(b.Get(), 7);
+    print("mono ok");
+}

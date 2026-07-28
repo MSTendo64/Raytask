@@ -1,0 +1,58 @@
+import bstd.io;
+import bstd.collections;
+import bstd.math;
+import bstd.json;
+import bstd.result;
+import bstd.fs;
+import bstd.crypto;
+import bstd.test;
+
+void Main() {
+    print("=== bstd demo ===");
+
+    var list = new List<int>();
+    list.Add(1);
+    list.Add(2);
+    list.Add(3);
+    print(list.Count);
+    print(list.Sum());
+
+    var dict = new Dictionary<string, int>();
+    dict["a"] = 10;
+    dict["b"] = 20;
+    print(dict["a"]);
+    print(dict.ContainsKey("b"));
+
+    var mySet = new Set<int>();
+    mySet.Add(1);
+    mySet.Add(1);
+    mySet.Add(2);
+    print(mySet.Count);
+
+    var text = "Hello, World!";
+    print(text.ToUpper());
+    print(text.Contains("World"));
+    print(Math.Sqrt(9.0));
+    print(Math.PI);
+
+    var joined = string.Join(", ", ["a", "b", "c"]);
+    print(joined);
+
+    var json = Json.Parse("{\"x\": 1, \"y\": 2}");
+    print(Json.Stringify(json, false));
+
+    var ok = Ok(42);
+    print(ok.IsOk);
+    print(ok.Value);
+
+    var hash = Hash.Sha256("raytask");
+    print(hash);
+
+    File.WriteText("examples/_stdlib_tmp.txt", "hello fs");
+    print(File.ReadText("examples/_stdlib_tmp.txt"));
+    File.Delete("examples/_stdlib_tmp.txt");
+
+    assert(list.Count == 3);
+    assertEq(2 + 2, 4);
+    print("=== all ok ===");
+}

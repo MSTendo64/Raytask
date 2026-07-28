@@ -1,0 +1,17 @@
+// Embedded C + FFI (needs gcc, clang, or MSVC cl)
+
+[c: "
+#include <stdint.h>
+int rt_add(int a, int b) { return a + b; }
+int rt_mul(int a, int b) { return a * b; }
+"]
+
+[link: "raytask_embed_1"]
+int rt_add(a: int, b: int);
+int rt_mul(a: int, b: int);
+
+void Main() {
+    assertEq(rt_add(20, 22), 42);
+    assertEq(rt_mul(6, 7), 42);
+    print("embed ok");
+}

@@ -1,0 +1,11 @@
+// bstd — notes for FFI (see language attributes, not loaded as .rt)
+
+// [DllImport: "lib.so"] / [link: "lib.dll"]  — load shared library
+// [include: "header.h"]                     — for C codegen
+// [c: "..."] / [cembed: "..."]              — compile embedded C to a temp DLL/SO
+// [abi: "cdecl"|"stdcall"|"system"]         — calling convention
+// [export: "c_name"]                        — export RayTask fn for C / rename symbol
+//
+// Bodyless function declarations become FFI imports:
+//   [DllImport: "kernel32.dll"]
+//   uint GetTickCount();

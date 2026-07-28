@@ -1,0 +1,8 @@
+void Main() {
+    var x = 10;
+    var y = 32;
+    print(x + y);
+    for (var i = 0; i < 5; i++) {
+        print(i);
+    }
+}

@@ -1,0 +1,17 @@
+// bstd.logging
+
+export class Logger {
+    new() {}
+    void Log(message: string) {}
+    void Info(message: string) {}
+    void Warn(message: string) {}
+    void Error(message: string) {}
+    void Debug(message: string) {}
+    void LogWarning(message: string) {}
+    void LogError(message: string) {}
+
+    export static void Info(message: string);
+    export static void Warn(message: string);
+    export static void Error(message: string);
+    export static void Debug(message: string);
+}

@@ -1,0 +1,7 @@
+import bstd.io;
+import mylib.mathutil;
+
+void Main() {
+    print(Double(21));
+    print(Triple(7));
+}

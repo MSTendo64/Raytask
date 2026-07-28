@@ -1,0 +1,5 @@
+// bstd.test
+
+export void assert(condition: bool);
+export void assert(condition: bool, message: string);
+export void assertEq(a: dyn, b: dyn);

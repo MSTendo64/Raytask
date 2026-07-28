@@ -1,0 +1,7 @@
+// bstd.crypto
+
+export class Hash {
+    export static string Sha256(data: dyn);
+    export static string Sha1(data: dyn);
+    export static string Md5(data: dyn);
+}

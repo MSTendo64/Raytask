@@ -1,0 +1,5 @@
+// bstd.unsafe
+
+export ptr<byte> malloc(size: int);
+export void free(p: ptr<byte>);
+export int sizeof(value: dyn);

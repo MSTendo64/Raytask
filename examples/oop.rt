@@ -1,0 +1,27 @@
+import bstd.io;
+
+class Animal {
+    protected string name;
+
+    new(name: string) {
+        this.name = name;
+    }
+
+    virtual string Speak() {
+        return "???";
+    }
+}
+
+class Dog : Animal {
+    new(name: string) : base(name) {
+    }
+
+    override string Speak() {
+        return "Woof!";
+    }
+}
+
+void Main() {
+    var dog = new Dog("Rex");
+    print($"Dog says: {dog.Speak()}");
+}

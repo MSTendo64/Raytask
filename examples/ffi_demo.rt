@@ -1,0 +1,11 @@
+// FFI / DllImport — call a native Windows DLL from RayTask
+
+[DllImport: "kernel32.dll"]
+uint GetTickCount();
+
+void Main() {
+    var t0 = GetTickCount();
+    print($"GetTickCount() = {t0}");
+    assert(t0 > 0);
+    print("ffi ok");
+}

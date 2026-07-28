@@ -1,0 +1,10 @@
+// bstd.result
+
+export class Result<T, E> {
+    property IsOk: bool { get; }
+    property Value: T { get; }
+    property Error: E { get; }
+}
+
+export Result Ok(value: dyn);
+export Result Error(err: dyn);

@@ -1,0 +1,10 @@
+// Should fail typecheck
+void Main() {
+    int x = "hello";
+    string s = 42;
+    var y = null;
+    if (x) {
+        print(x);
+    }
+    UnknownType z = null;
+}

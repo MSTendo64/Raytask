@@ -1,0 +1,66 @@
+// bstd.collections — List, Dictionary, Set, Queue, Stack
+
+export class List<T> {
+    property Count: int { get; }
+    property Length: int { get; }
+
+    new() {}
+
+    void Add(item: T) {}
+    T Get(index: int) { return null; }
+    void RemoveAt(index: int) {}
+    bool Contains(item: T) { return false; }
+    void Clear() {}
+    T First() { return null; }
+    T Last() { return null; }
+    dyn Sum() { return 0; }
+    double Average() { return 0.0; }
+    T Max() { return null; }
+    T Min() { return null; }
+    List<T> Where(pred: dyn) { return null; }
+    List<U> Select<U>(mapper: dyn) { return null; }
+    bool Any(pred: dyn) { return false; }
+    bool All(pred: dyn) { return true; }
+}
+
+export class Dictionary<K, V> {
+    property Count: int { get; }
+
+    new() {}
+
+    bool ContainsKey(key: K) { return false; }
+    void Remove(key: K) {}
+    void Clear() {}
+    List<K> Keys() { return null; }
+    List<V> Values() { return null; }
+}
+
+export class Set<T> {
+    property Count: int { get; }
+
+    new() {}
+
+    void Add(item: T) {}
+    bool Contains(item: T) { return false; }
+    void Remove(item: T) {}
+}
+
+export class Queue<T> {
+    property Count: int { get; }
+
+    new() {}
+
+    void Enqueue(item: T) {}
+    T Dequeue() { return null; }
+    T Peek() { return null; }
+}
+
+export class Stack<T> {
+    property Count: int { get; }
+
+    new() {}
+
+    void Push(item: T) {}
+    T Pop() { return null; }
+    T Peek() { return null; }
+}

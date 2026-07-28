@@ -1,0 +1,8 @@
+// Shared helper module for import tests
+export int Double(x: int) {
+    return x * 2;
+}
+
+export int Triple(x: int) {
+    return x * 3;
+}

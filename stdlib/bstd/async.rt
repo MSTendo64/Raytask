@@ -1,0 +1,14 @@
+// bstd.async — Task / async-await (implemented as VM natives + event-loop)
+
+export class Task {
+    /// Suspend for `milliseconds`, returning a Task that completes with null.
+    export static Task Delay(milliseconds: int);
+    /// Schedule `fn` on the event-loop; returns a Task for its result.
+    export static Task Run(fn: dyn);
+    /// Wait until all tasks complete; result is an array of results.
+    export static Task WhenAll(tasks: dyn[]);
+}
+
+export class Task<T> {
+    property Result: T { get; }
+}

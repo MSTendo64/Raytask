@@ -1,0 +1,8 @@
+// bstd.json
+
+export class Json {
+    export static dyn Parse(json: string);
+    export static string Stringify(value: dyn, pretty: bool);
+    export static string Serialize(value: dyn);
+    export static dyn Deserialize(json: string);
+}

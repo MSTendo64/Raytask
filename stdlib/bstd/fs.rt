@@ -1,0 +1,27 @@
+// bstd.fs — file system (VM natives)
+
+export class FileInfo {
+    property Path: string { get; }
+    property Size: long { get; }
+    property Created: long { get; }
+    property Modified: long { get; }
+}
+
+export class File {
+    export static string ReadText(path: string);
+    export static void WriteText(path: string, content: string);
+    export static void AppendText(path: string, content: string);
+    export static byte[] ReadBytes(path: string);
+    export static void WriteBytes(path: string, data: byte[]);
+    export static bool Exists(path: string);
+    export static void Delete(path: string);
+    export static FileInfo GetInfo(path: string);
+}
+
+export class Directory {
+    export static string[] GetFiles(path: string);
+    export static string[] GetDirectories(path: string);
+    export static void Create(path: string);
+    export static void Delete(path: string);
+    export static bool Exists(path: string);
+}

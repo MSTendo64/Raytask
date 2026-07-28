@@ -1,0 +1,16 @@
+import bstd.io;
+
+void Main() {
+    print("Hello, RayTask!");
+    var x = 10;
+    var y = 32;
+    print($"10 + 32 = {x + y}");
+
+    if (x > 5) {
+        print("x is greater than 5");
+    }
+
+    for (var i = 0; i < 5; i++) {
+        print($"i = {i}");
+    }
+}

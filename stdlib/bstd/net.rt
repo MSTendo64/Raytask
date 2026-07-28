@@ -1,0 +1,36 @@
+// bstd.net — synchronous HTTP/TCP/UDP
+
+export class HttpResponse {
+    property Status: int { get; }
+    property Body: string { get; }
+}
+
+export class Http {
+    export static HttpResponse Get(url: string);
+    export static HttpResponse Post(url: string, body: string);
+    export static HttpResponse GetAsync(url: string);
+}
+
+export class TcpClient {
+    new() {}
+    void Connect(host: string, port: int) {}
+    void Send(data: string) {}
+    string Receive() { return ""; }
+    void Close() {}
+}
+
+export class TcpServer {
+    new(port: int) {}
+}
+
+export class UdpSocket {
+    new(port: int) {}
+    void Send(data: string, host: string, port: int) {}
+    dyn Receive() { return null; }
+}
+
+export class UdpPacket {
+    property Data: string { get; }
+    property Ip: string { get; }
+    property Port: int { get; }
+}

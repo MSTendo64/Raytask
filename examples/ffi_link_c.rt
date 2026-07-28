@@ -1,0 +1,12 @@
+// Link a .c file from disk (compiled to shared lib at runtime)
+
+[link: "examples/native/add.c"]
+int native_add(a: int, b: int);
+double native_hypot(x: double, y: double);
+
+void Main() {
+    assertEq(native_add(2, 3), 5);
+    var h = native_hypot(3.0, 4.0);
+    assert(h == 25.0);
+    print("native link ok");
+}

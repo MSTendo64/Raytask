@@ -1,0 +1,42 @@
+[package]
+name = "raytask"
+version = "0.1.0"
+edition = "2021"
+description = "RayTask — cross-platform programming language"
+authors = ["RayTask Contributors"]
+license = "MIT"
+readme = "README.md"
+keywords = ["language", "compiler", "vm", "raytask"]
+categories = ["compilers", "development-tools"]
+default-run = "raytask"
+
+[[bin]]
+name = "raytask"
+path = "src/main.rs"
+
+[[bin]]
+name = "raytask-stub"
+path = "src/bin/raytask_stub.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+indexmap = "2"
+colored = "3"
+walkdir = "2"
+uuid = { version = "1", features = ["v4"] }
+libloading = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
