@@ -1,0 +1,16 @@
+[Unit]
+Description=RayTask lib Registry
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/raytask
+Environment=RAYTASK_REGISTRY_HOST=0.0.0.0
+Environment=RAYTASK_REGISTRY_PORT=8080
+Environment=RAYTASK_REGISTRY_APP_ROOT=deploy/registry-linux-server/data
+ExecStart=/opt/raytask/target/release/raytask run apps/registry/main.rt
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

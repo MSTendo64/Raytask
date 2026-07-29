@@ -407,6 +407,110 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
     resp.properties.insert("Body".into(), Ty::String);
     types.insert("HttpResponse".into(), resp);
 
+    let mut http_server = empty_class("HttpServer");
+    http_server.methods.insert(
+        "ServeScript".into(),
+        method(
+            "ServeScript",
+            vec![
+                ("host", Ty::String),
+                ("port", Ty::Int),
+                ("script", Ty::String),
+                ("staticDir", Ty::String),
+            ],
+            Ty::Void,
+            true,
+        ),
+    );
+    types.insert("HttpServer".into(), http_server);
+
+    let mut web = empty_class("Web");
+    for (name, params, ret) in [
+        ("Method", vec![], Ty::String),
+        ("Path", vec![], Ty::String),
+        ("Body", vec![], Ty::String),
+        ("IsHtmx", vec![], Ty::Bool),
+        ("ScriptDir", vec![], Ty::String),
+        ("StaticDir", vec![], Ty::String),
+        ("Render", vec![("path", Ty::String), ("model", Ty::Dyn)], Ty::Void),
+        ("Json", vec![("value", Ty::Dyn)], Ty::Void),
+        ("Html", vec![("value", Ty::String)], Ty::Void),
+        ("Text", vec![("value", Ty::String)], Ty::Void),
+        ("File", vec![("path", Ty::String), ("contentType", Ty::String)], Ty::Void),
+        ("Write", vec![("value", Ty::String)], Ty::Void),
+        ("Redirect", vec![("url", Ty::String)], Ty::Void),
+        ("SetStatus", vec![("status", Ty::Int)], Ty::Void),
+        ("SetHeader", vec![("name", Ty::String), ("value", Ty::String)], Ty::Void),
+        (
+            "SetCookie",
+            vec![
+                ("name", Ty::String),
+                ("value", Ty::String),
+                ("path", Ty::String),
+                ("httpOnly", Ty::Bool),
+                ("maxAge", Ty::Int),
+            ],
+            Ty::Void,
+        ),
+        ("Query", vec![("name", Ty::String)], Ty::String),
+        ("Form", vec![("name", Ty::String)], Ty::String),
+        ("Header", vec![("name", Ty::String)], Ty::String),
+        ("Cookie", vec![("name", Ty::String)], Ty::String),
+        ("ParseJson", vec![("text", Ty::String)], Ty::Dyn),
+    ] {
+        web.methods
+            .insert(name.into(), method(name, params, ret, true));
+    }
+    types.insert("Web".into(), web);
+
+    let mut template = empty_class("Template");
+    template.methods.insert(
+        "Render".into(),
+        method(
+            "Render",
+            vec![("path", Ty::String), ("model", Ty::Dyn)],
+            Ty::String,
+            true,
+        ),
+    );
+    types.insert("Template".into(), template);
+
+    let mut sqlite = empty_class("Sqlite");
+    sqlite.methods.insert(
+        "Open".into(),
+        method(
+            "Open",
+            vec![("path", Ty::String)],
+            Ty::Named("SqliteConnection".into()),
+            true,
+        ),
+    );
+    types.insert("Sqlite".into(), sqlite);
+
+    let mut sqlite_conn = empty_class("SqliteConnection");
+    sqlite_conn.properties.insert("path".into(), Ty::String);
+    sqlite_conn.methods.insert(
+        "Execute".into(),
+        method("Execute", vec![("sql", Ty::String)], Ty::Int, false),
+    );
+    sqlite_conn.methods.insert(
+        "Query".into(),
+        method("Query", vec![("sql", Ty::String)], Ty::Dyn, false),
+    );
+    sqlite_conn.methods.insert(
+        "QueryOne".into(),
+        method("QueryOne", vec![("sql", Ty::String)], Ty::Dyn, false),
+    );
+    sqlite_conn.methods.insert(
+        "LastInsertRowId".into(),
+        method("LastInsertRowId", vec![], Ty::Long, false),
+    );
+    sqlite_conn.methods.insert(
+        "Close".into(),
+        method("Close", vec![], Ty::Void, false),
+    );
+    types.insert("SqliteConnection".into(), sqlite_conn);
+
     let mut task = empty_class("Task");
     task.methods.insert(
         "Delay".into(),

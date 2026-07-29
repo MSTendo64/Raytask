@@ -1,0 +1,33 @@
+// bstd.web - server-side request/response helpers
+
+export class HttpServer {
+    export static void ServeScript(host: string, port: int, script: string, staticDir: string);
+}
+
+export class Web {
+    export static string Method();
+    export static string Path();
+    export static string Body();
+    export static string Query(name: string);
+    export static string Form(name: string);
+    export static string Header(name: string);
+    export static string Cookie(name: string);
+    export static bool IsHtmx();
+    export static string ScriptDir();
+    export static string StaticDir();
+    export static dyn ParseJson(text: string);
+    export static void SetStatus(status: int);
+    export static void SetHeader(name: string, value: string);
+    export static void SetCookie(name: string, value: string, path: string, httpOnly: bool, maxAge: int);
+    export static void Write(value: string);
+    export static void Text(value: string);
+    export static void Html(value: string);
+    export static void Json(value: dyn);
+    export static void Redirect(url: string);
+    export static void Render(path: string, model: dyn);
+    export static void File(path: string, contentType: string);
+}
+
+export class Template {
+    export static string Render(path: string, model: dyn);
+}

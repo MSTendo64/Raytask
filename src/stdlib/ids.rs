@@ -155,6 +155,25 @@ pub const HASH_MD5: usize = 602;
 pub const HTTP_GET: usize = 700;
 pub const HTTP_POST: usize = 701;
 pub const HTTP_GET_ASYNC: usize = 702; // sync under the hood
+pub const HTTP_SERVER_SERVE_SCRIPT: usize = 703;
+pub const WEB_METHOD: usize = 704;
+pub const WEB_PATH: usize = 705;
+pub const WEB_QUERY: usize = 706;
+pub const WEB_FORM: usize = 707;
+pub const WEB_HEADER: usize = 708;
+pub const WEB_COOKIE: usize = 709;
+pub const WEB_BODY: usize = 710;
+pub const WEB_SET_STATUS: usize = 711;
+pub const WEB_SET_HEADER: usize = 712;
+pub const WEB_SET_COOKIE: usize = 713;
+pub const WEB_WRITE: usize = 714;
+pub const WEB_HTML: usize = 715;
+pub const WEB_JSON: usize = 716;
+pub const WEB_REDIRECT: usize = 717;
+pub const TEMPLATE_RENDER: usize = 718;
+pub const WEB_RENDER: usize = 719;
+pub const WEB_TEXT: usize = 732;
+pub const WEB_FILE: usize = 733;
 
 // ---- Tcp / Udp ----
 pub const TCP_CONNECT: usize = 720;
@@ -163,6 +182,16 @@ pub const TCP_RECEIVE: usize = 722;
 pub const TCP_CLOSE: usize = 723;
 pub const UDP_SEND: usize = 730;
 pub const UDP_RECEIVE: usize = 731;
+pub const SQLITE_OPEN: usize = 740;
+pub const SQLITE_EXECUTE: usize = 741;
+pub const SQLITE_QUERY: usize = 742;
+pub const SQLITE_QUERY_ONE: usize = 743;
+pub const SQLITE_LAST_INSERT_ROWID: usize = 744;
+pub const SQLITE_CLOSE: usize = 745;
+pub const WEB_IS_HTMX: usize = 746;
+pub const WEB_SCRIPT_DIR: usize = 747;
+pub const WEB_STATIC_DIR: usize = 748;
+pub const WEB_PARSE_JSON: usize = 749;
 
 // ---- Task ----
 pub const TASK_DELAY: usize = 800;

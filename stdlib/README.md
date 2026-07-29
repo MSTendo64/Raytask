@@ -15,6 +15,8 @@ API stubs live in `stdlib/bstd/*.rt`. Runtime implementations are VM natives in 
 | `bstd.yml` | native | `Yaml.Parse` / `Serialize` |
 | `bstd.crypto` | native | `Hash.Sha256` / `Sha1` / `Md5` |
 | `bstd.net` | sync native | `Http.Get`/`Post`, `TcpClient`, `UdpSocket` |
+| `bstd.web` | sync native | `HttpServer`, `Web`, `Template` for server-side apps |
+| `bstd.sqlite` | sync native | `Sqlite.Open`, `SqliteConnection.Execute/Query` |
 | `bstd.async` | partial | `Task.Delay` (thread sleep); no full event loop |
 | `bstd.unsafe` | native | `malloc` / `free` / `sizeof` (arena) |
 | FFI | language | `[DllImport:]` / `[link:]` / `[include:]` / `[c:]` — see `examples/ffi_demo.rt` |

@@ -1,0 +1,5 @@
+package "RegistryDemo" {
+    version = "0.1.1"
+    author = "RayTask"
+    description = "Package used for registry integration smoke tests."
+}

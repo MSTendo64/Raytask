@@ -65,3 +65,6 @@ credentials.json
 *.temp
 *.log
 /tmp/
+/.tmp-registry-client/
+apps/registry/data/
+apps/registry/storage/

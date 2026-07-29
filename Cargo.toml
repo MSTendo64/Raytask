@@ -38,6 +38,9 @@ uuid = { version = "1", features = ["v4"] }
 libloading = "0.8"
 flate2 = "1"
 zstd = { version = "0.13", default-features = false }
+serde_urlencoded = "0.7.1"
+tiny_http = "0.12.0"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
 
 [profile.release]
 lto = true

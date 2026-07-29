@@ -1,0 +1,14 @@
+// bstd.sqlite - SQLite access helpers
+
+export class SqliteConnection {
+    property path: string { get; }
+    int Execute(sql: string) { return 0; }
+    dyn Query(sql: string) { return null; }
+    dyn QueryOne(sql: string) { return null; }
+    long LastInsertRowId() { return 0; }
+    void Close() {}
+}
+
+export class Sqlite {
+    export static SqliteConnection Open(path: string);
+}

@@ -94,6 +94,57 @@ raytask doc
 
 Remote registry: set `RAYTASK_REGISTRY_URL` (`index.json` + packages).
 
+### Registry App
+
+This repo now includes a server-side RayTask application at `apps/registry/` that implements
+the **RayTask lib Registry** on top of new web/runtime primitives:
+
+- `HttpServer` + `Web` request/response context
+- `Template.Render(...)` with escaped variables and raw HTML blocks
+- `Sqlite.Open(...)` for the app data layer
+- moderated package versions, public catalog, login/register, maintainer dashboard
+- machine endpoints compatible with the current package client:
+  - `GET /index.json`
+  - `GET /packages/{name}/{version}.zip`
+
+The reusable RayTask-side web layer has been extracted into `packages/RTWebApp/`. This package is
+written entirely in RayTask and can be published to the registry separately.
+
+Deployment-oriented server copies are prepared under:
+
+- `deploy/registry-windows-server/`
+- `deploy/registry-linux-server/`
+
+Run it from the repo root:
+
+```bash
+cargo run -- run apps/registry/main.rt
+```
+
+Optional bootstrap / automation env vars:
+
+- `RAYTASK_REGISTRY_ADMIN_USER`
+- `RAYTASK_REGISTRY_ADMIN_PASS`
+- `RAYTASK_REGISTRY_PUBLISH_TOKEN`
+
+Example local client config:
+
+```yaml
+repositories:
+  - name: local-registry
+    url: http://127.0.0.1:8080
+    priority: 999
+    secure: false
+```
+
+Then:
+
+```bash
+raytask search RegistryDemo
+raytask install RegistryDemo@0.1.1
+raytask publish examples/registry_pkg
+```
+
 ### Typechecker
 
 Static checks run before build and run:

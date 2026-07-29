@@ -221,6 +221,79 @@ raytask publish .
 Local search paths: `.raytask/packages/`, `registry/`, `RAYTASK_REGISTRY`.  
 Remote: `RAYTASK_REGISTRY_URL`.
 
+## Server-side web stack
+
+RayTask now ships a minimal server-side stack for registry-style applications.
+
+### `bstd.web`
+
+Use `HttpServer.ServeScript(host, port, script, staticDir)` to run a RayTask request handler.
+Each HTTP request executes the target RayTask script inside a web context.
+
+Available helpers:
+
+- `Web.Method()`, `Web.Path()`, `Web.Query(name)`, `Web.Form(name)`
+- `Web.Header(name)`, `Web.Cookie(name)`, `Web.Body()`
+- `Web.SetStatus(code)`, `Web.SetHeader(name, value)`, `Web.SetCookie(...)`
+- `Web.Text(...)`, `Web.Html(...)`, `Web.Json(...)`, `Web.File(...)`
+- `Web.Render(templatePath, model)` for server-side HTML rendering
+
+### `bstd.sqlite`
+
+The SQLite bridge is intentionally small and works well for app-style code:
+
+```raytask
+import bstd.sqlite;
+
+void Main() {
+    var db = Sqlite.Open("app.db");
+    db.Execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, title TEXT);");
+    db.Execute("INSERT INTO notes (title) VALUES ('hello');");
+    var rows = db.Query("SELECT id, title FROM notes;");
+    print(rows[0]["title"]);
+    db.Close();
+}
+```
+
+### Templates
+
+`Template.Render(path, model)` and `Web.Render(path, model)` support:
+
+- escaped variables: `{{title}}`
+- raw variables: `{{{content}}}`
+- conditionals: `{{#if notice}}...{{/if}}`
+- loops: `{{#each items}}...{{/each}}`
+
+### Example app: `apps/registry/`
+
+The repository contains a complete RayTask web application:
+
+- `apps/registry/main.rt` starts the HTTP server
+- `apps/registry/src/app.rt` contains routes, auth/session logic, moderation workflow, and API handlers
+- `packages/RTWebApp/src/lib.rt` contains the reusable web-platform helper layer written fully in RayTask
+- `apps/registry/templates/` contains layout templates
+- `apps/registry/static/` contains the CSS theme
+
+`RTWebApp` now also includes:
+
+- `RTWebContext` for request context helpers
+- `RTWebRouteMatch` for prefix-based router abstraction
+- reusable `RTWebRenderPage(...)`, auth/session, audit, and publish-token helpers
+
+Start it with:
+
+```bash
+cargo run -- run apps/registry/main.rt
+```
+
+Useful env vars:
+
+```bash
+RAYTASK_REGISTRY_ADMIN_USER=admin
+RAYTASK_REGISTRY_ADMIN_PASS=change-me
+RAYTASK_REGISTRY_PUBLISH_TOKEN=dev-token
+```
+
 ## Testing and docs
 
 ```bash

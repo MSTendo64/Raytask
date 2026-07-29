@@ -34,6 +34,7 @@ pub mod token;
 pub mod types;
 pub mod value;
 pub mod vm;
+pub mod web_runtime;
 
 use crate::app_build::{build_app, Platform};
 use crate::bytecode_format::{deserialize_module, serialize_module};

@@ -1,0 +1,249 @@
+import bstd.io;
+import bstd.fs;
+import bstd.crypto;
+import bstd.json;
+import bstd.web;
+
+export string RTWebSql(string value) {
+    return value.Replace("'", "''");
+}
+
+export string RTWebJsonQuote(string value) {
+    return "\"" + value
+        .Replace("\\", "\\\\")
+        .Replace("\"", "\\\"")
+        .Replace("\r", "")
+        .Replace("\n", "\\n") + "\"";
+}
+
+export string RTWebSlug(string value) {
+    var s = value.ToLower().Trim();
+    s = s.Replace(" ", "-");
+    s = s.Replace("/", "-");
+    s = s.Replace("\\", "-");
+    s = s.Replace(":", "-");
+    return s;
+}
+
+export string RTWebStringify(dyn value) {
+    return ToString(value);
+}
+
+export void RTWebEnsureDir(string path) {
+    Directory.Create(path);
+}
+
+export dyn RTWebLayoutModel(string title, string content, string nav, string notice) {
+    return Json.Parse(
+        "{"
+        + "\"title\":" + RTWebJsonQuote(title) + ","
+        + "\"content\":" + RTWebJsonQuote(content) + ","
+        + "\"nav\":" + RTWebJsonQuote(nav) + ","
+        + "\"notice\":" + RTWebJsonQuote(notice)
+        + "}"
+    );
+}
+
+export void RTWebRenderPage(string layoutPath, string title, string content, string nav, string notice) {
+    var html = Template.Render(layoutPath, RTWebLayoutModel(title, content, nav, notice));
+    Web.Html(html);
+}
+
+export string RTWebStatusChip(string status) {
+    if (status == "approved") {
+        return "<span class=\"chip ok\">approved</span>";
+    }
+    if (status == "rejected") {
+        return "<span class=\"chip bad\">rejected</span>";
+    }
+    return "<span class=\"chip pending\">pending</span>";
+}
+
+export string RTWebPasswordHash(string password, string salt) {
+    return Hash.Sha256(salt + ":" + password);
+}
+
+export string RTWebSessionToken() {
+    return GenerateGuid().Replace("-", "") + GenerateGuid().Replace("-", "");
+}
+
+export string RTWebNowText() {
+    return DateTime.UtcNow.ToString();
+}
+
+export void RTWebBootstrapAdmin(dyn db, string userEnv, string passEnv) {
+    var existing = db.QueryOne("SELECT id FROM users WHERE is_admin = 1 LIMIT 1;");
+    if (!IsNull(existing)) {
+        return;
+    }
+
+    var username = Env.Get(userEnv);
+    var password = Env.Get(passEnv);
+    if (IsNull(username) || IsNull(password) || String.IsNullOrWhiteSpace(username) || String.IsNullOrWhiteSpace(password)) {
+        return;
+    }
+
+    var salt = GenerateGuid();
+    db.Execute(
+        "INSERT OR IGNORE INTO users (username, password_hash, salt, is_admin, created_at) VALUES ('"
+        + RTWebSql(username) + "', '"
+        + RTWebSql(RTWebPasswordHash(password, salt)) + "', '"
+        + RTWebSql(salt) + "', 1, '"
+        + RTWebSql(RTWebNowText()) + "');"
+    );
+}
+
+export dyn RTWebCurrentUser(dyn db, string cookieName) {
+    var token = Web.Cookie(cookieName);
+    if (IsNull(token) || String.IsNullOrWhiteSpace(token)) {
+        return null;
+    }
+    return db.QueryOne(
+        "SELECT users.id, users.username, users.is_admin, sessions.csrf_token "
+        + "FROM sessions JOIN users ON users.id = sessions.user_id "
+        + "WHERE sessions.token = '" + RTWebSql(token) + "' "
+        + "AND sessions.expires_at >= '" + RTWebSql(RTWebNowText()) + "' LIMIT 1;"
+    );
+}
+
+export void RTWebCreateSession(dyn db, dyn user, string cookieName, int lifetimeSeconds) {
+    var token = RTWebSessionToken();
+    var csrf = RTWebSessionToken().Substring(0, 24);
+    db.Execute(
+        "INSERT INTO sessions (user_id, token, csrf_token, created_at, expires_at) VALUES ("
+        + RTWebStringify(user["id"]) + ", '"
+        + RTWebSql(token) + "', '"
+        + RTWebSql(csrf) + "', '"
+        + RTWebSql(RTWebNowText()) + "', '9999-12-31T00:00:00Z');"
+    );
+    Web.SetCookie(cookieName, token, "/", true, lifetimeSeconds);
+}
+
+export bool RTWebApiPublishAuthorized(string tokenEnv) {
+    var expected = Env.Get(tokenEnv);
+    if (IsNull(expected) || String.IsNullOrWhiteSpace(expected)) {
+        return true;
+    }
+    return Web.Header("authorization") == "Bearer " + expected;
+}
+
+export dyn RTWebApiActor(dyn db, dyn user, string tokenEnv) {
+    if (!IsNull(user)) {
+        return user;
+    }
+    if (!RTWebApiPublishAuthorized(tokenEnv)) {
+        return null;
+    }
+    var admin = db.QueryOne("SELECT id, username, is_admin FROM users WHERE is_admin = 1 ORDER BY id ASC LIMIT 1;");
+    if (IsNull(admin)) {
+        var salt = GenerateGuid();
+        db.Execute(
+            "INSERT INTO users (username, password_hash, salt, is_admin, created_at) VALUES ('registry-bot', '"
+            + RTWebSql(RTWebPasswordHash("registry-bot", salt)) + "', '"
+            + RTWebSql(salt) + "', 1, '"
+            + RTWebSql(RTWebNowText()) + "');"
+        );
+        admin = db.QueryOne("SELECT id, username, is_admin FROM users WHERE username = 'registry-bot' LIMIT 1;");
+    }
+    return admin;
+}
+
+export void RTWebAudit(dyn db, dyn user, string action, string subjectType, int subjectId, string payload) {
+    var actor = "NULL";
+    if (!IsNull(user)) {
+        actor = RTWebStringify(user["id"]);
+    }
+    db.Execute(
+        "INSERT INTO audit_log (actor_user_id, action, subject_type, subject_id, payload, created_at) VALUES ("
+        + actor + ", '"
+        + RTWebSql(action) + "', '"
+        + RTWebSql(subjectType) + "', "
+        + RTWebStringify(subjectId) + ", '"
+        + RTWebSql(payload) + "', '"
+        + RTWebSql(RTWebNowText()) + "');"
+    );
+}
+
+export string[] RTWebSplitPath(string path) {
+    var rest = path;
+    if (rest.StartsWith("/")) {
+        rest = rest.Substring(1);
+    }
+    if (rest == "") {
+        return [];
+    }
+    return rest.Split("/");
+}
+
+export class RTWebRouteMatch {
+    bool Matched;
+    string Rest;
+    string[] Parts;
+
+    new(matched: bool, rest: string, parts: string[]) {
+        this.Matched = matched;
+        this.Rest = rest;
+        this.Parts = parts;
+    }
+
+    int Count() {
+        return this.Parts.Count;
+    }
+
+    string Part(index: int) {
+        if (index < 0 || index >= this.Parts.Count) {
+            return "";
+        }
+        return this.Parts[index];
+    }
+}
+
+export class RTWebContext {
+    string Method;
+    string Path;
+    string RawBody;
+    bool Htmx;
+
+    new() {
+        this.Method = Web.Method();
+        this.Path = Web.Path();
+        this.RawBody = Web.Body();
+        this.Htmx = Web.IsHtmx();
+    }
+
+    string Query(name: string) {
+        return Web.Query(name);
+    }
+
+    string Form(name: string) {
+        return Web.Form(name);
+    }
+
+    string Header(name: string) {
+        return Web.Header(name);
+    }
+
+    string Cookie(name: string) {
+        return Web.Cookie(name);
+    }
+
+    bool Is(method: string, path: string) {
+        return this.Method == method && this.Path == path;
+    }
+
+    bool StartsWith(method: string, prefix: string) {
+        return this.Method == method && this.Path.StartsWith(prefix);
+    }
+
+    RTWebRouteMatch MatchPrefix(method: string, prefix: string) {
+        if (this.Method != method || !this.Path.StartsWith(prefix)) {
+            return new RTWebRouteMatch(false, "", []);
+        }
+
+        var rest = this.Path.Substring(prefix.Length);
+        if (rest.StartsWith("/")) {
+            rest = rest.Substring(1);
+        }
+        return new RTWebRouteMatch(true, rest, RTWebSplitPath(rest));
+    }
+}

@@ -1,0 +1,5 @@
+package "RTWebApp" {
+    version = "0.1.0"
+    author = "RayTask Contributors"
+    description = "RayTask-first web application helpers built on top of Web/Template/Sqlite primitives."
+}

@@ -13,7 +13,9 @@ A RayTask registry is a simple HTTP server (or a local directory) that serves:
 | `/index.json` | GET | Full catalog of available packages |
 | `/packages/{name}/{version}.zip` | GET | Package archive |
 
-No authentication is required by default. For private registries, add a `token:` field in `rtp.repos.yml` — the token is sent as `Authorization: Bearer <token>`.
+No authentication is required for read endpoints by default. For private registries, add a `token:` field in `rtp.repos.yml` — the token is sent as `Authorization: Bearer <token>`.
+
+This repository also ships a reference server implementation in `apps/registry/` named **RayTask lib Registry**.
 
 ---
 
@@ -61,6 +63,8 @@ The server must respond with `Content-Type: application/json` and the following 
 ## `GET /packages/{name}/{version}.zip`
 
 This is the **default download URL pattern** the client uses when `download_url` is not set in the index.
+
+For development registries, the current client also accepts a plain-text `.rt` payload at this URL. When the response is not a ZIP archive, RayTask installs it as `external/<name>/src/lib.rt`. ZIP remains the recommended production format.
 
 ### Archive format
 
@@ -152,6 +156,36 @@ repositories:
     url: http://localhost:8080
     priority: 10
 ```
+
+## Write / moderation endpoints
+
+The reference app exposes moderation-aware write endpoints in addition to the read protocol above.
+
+Browser/app routes:
+
+- `GET /register`
+- `POST /register`
+- `GET /login`
+- `POST /login`
+- `GET /dashboard`
+- `POST /dashboard/packages/new`
+- `POST /api/upload`
+- `GET /admin/review`
+- `POST /api/review/{versionId}/approve`
+- `POST /api/review/{versionId}/reject`
+
+CLI-compatible publish route:
+
+- `POST /packages/{name}/{version}`
+
+Body: plain-text RayTask source payload.
+
+If `RAYTASK_REGISTRY_PUBLISH_TOKEN` is configured on the server, callers can authenticate by sending `Authorization: Bearer <token>`.
+
+Admin bootstrap can also be seeded with:
+
+- `RAYTASK_REGISTRY_ADMIN_USER`
+- `RAYTASK_REGISTRY_ADMIN_PASS`
 
 ---
 
