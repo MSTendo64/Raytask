@@ -1,0 +1,84 @@
+import bstd.io;
+import bstd.fs;
+
+// ── Сжатие: gz (deflate) и zstd ───────────────────────────────────────────────
+//
+// Compress.GzCompress(data [, level])        → List<int>  — сжать массив байт
+// Compress.GzDecompress(data)                → List<int>  — распаковать
+// Compress.GzCompressFile(src, dst [, lvl])  → null — сжать файл
+// Compress.GzDecompressFile(src, dst)        → null — распаковать файл
+//
+// Compress.ZstdCompress(data [, level])      → List<int>
+// Compress.ZstdDecompress(data)              → List<int>
+// Compress.ZstdCompressFile(src, dst [, lvl])
+// Compress.ZstdDecompressFile(src, dst)
+//
+// level для gz: 0 (нет) .. 9 (максимум), default 6
+// level для zstd: 1 .. 22, default 3
+
+// Вспомогательная функция: List<int> → string (ASCII)
+string BytesToString(bytes: List<int>) {
+    var sb = new StringBuilder {};
+    for (var i = 0; i < bytes.Count; i++) {
+        sb.Append(ToString(bytes.Get(i)));
+        sb.Append(" ");
+    }
+    return sb.ToString();
+}
+
+void GzDemo() {
+    print("--- gz in-memory ---");
+    var original = "Hello, RayTask compression! ".Repeat(10);
+    print($"Original size: {original.Length}");
+
+    // Строку → байты (каждый символ как int)
+    var raw = new List<int> {};
+    for (var i = 0; i < original.Length; i++) {
+        // Simplified: just use File round-trip for demo
+        raw.Add(42);
+    }
+
+    // Проще через файл
+    File.WriteText("gz_input.txt", original);
+    Compress.GzCompressFile("gz_input.txt", "gz_input.txt.gz");
+    Compress.GzDecompressFile("gz_input.txt.gz", "gz_restored.txt");
+
+    var restored = File.ReadText("gz_restored.txt");
+    print($"Restored size: {restored.Length}");
+    print($"Match: {restored == original}");
+
+    var compressedBytes = File.ReadBytes("gz_input.txt.gz");
+    print($"Compressed bytes: {compressedBytes.Count}");
+
+    File.Delete("gz_input.txt");
+    File.Delete("gz_input.txt.gz");
+    File.Delete("gz_restored.txt");
+}
+
+void ZstdDemo() {
+    print("--- zstd file compression ---");
+    var bigText = "RayTask zstd demo! ".Repeat(100);
+    print($"Original size: {bigText.Length}");
+
+    File.WriteText("zstd_input.txt", bigText);
+    Compress.ZstdCompressFile("zstd_input.txt", "zstd_input.txt.zst", 6);
+    Compress.ZstdDecompressFile("zstd_input.txt.zst", "zstd_restored.txt");
+
+    var restored = File.ReadText("zstd_restored.txt");
+    print($"Restored size: {restored.Length}");
+    print($"Match: {restored == bigText}");
+
+    var cBytes = File.ReadBytes("zstd_input.txt.zst");
+    print($"Compressed bytes: {cBytes.Count}");
+    print($"Ratio: {100 - (cBytes.Count * 100 / bigText.Length)}%");
+
+    File.Delete("zstd_input.txt");
+    File.Delete("zstd_input.txt.zst");
+    File.Delete("zstd_restored.txt");
+}
+
+void Main() {
+    GzDemo();
+    ZstdDemo();
+    print("Compression demo done");
+}

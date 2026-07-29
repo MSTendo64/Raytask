@@ -10,6 +10,14 @@ use std::path::{Path, PathBuf};
 /// Resolve `import` declarations by loading `.rt` files and merging their items
 /// ahead of the main program (stdlib and relative modules first).
 pub fn resolve_program(source: &str, entry_path: Option<&Path>) -> CompileResult<Program> {
+    resolve_program_with_stdlib(source, entry_path, true)
+}
+
+pub fn resolve_program_with_stdlib(
+    source: &str,
+    entry_path: Option<&Path>,
+    stdlib_enabled: bool,
+) -> CompileResult<Program> {
     let entry_dir = entry_path
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
@@ -18,7 +26,7 @@ pub fn resolve_program(source: &str, entry_path: Option<&Path>) -> CompileResult
     let mut loaded = HashSet::new();
     let mut merged = Vec::new();
     let program = parse_str(source)?;
-    resolve_imports(&program, &entry_dir, &mut loaded, &mut merged)?;
+    resolve_imports(&program, &entry_dir, &mut loaded, &mut merged, stdlib_enabled)?;
     // Keep non-import items from dependencies, then main (imports become no-ops markers)
     let mut out_items = merged;
     out_items.extend(program.items);
@@ -35,9 +43,10 @@ fn resolve_imports(
     base_dir: &Path,
     loaded: &mut HashSet<String>,
     out: &mut Vec<Item>,
+    stdlib_enabled: bool,
 ) -> CompileResult<()> {
     for item in &program.items {
-        collect_from_item(item, base_dir, loaded, out)?;
+        collect_from_item(item, base_dir, loaded, out, stdlib_enabled)?;
     }
     Ok(())
 }
@@ -47,13 +56,14 @@ fn collect_from_item(
     base_dir: &Path,
     loaded: &mut HashSet<String>,
     out: &mut Vec<Item>,
+    stdlib_enabled: bool,
 ) -> CompileResult<()> {
     match item {
-        Item::Import(imp) => load_import(imp, base_dir, loaded, out),
-        Item::Attribute(_, inner) => collect_from_item(inner, base_dir, loaded, out),
+        Item::Import(imp) => load_import(imp, base_dir, loaded, out, stdlib_enabled),
+        Item::Attribute(_, inner) => collect_from_item(inner, base_dir, loaded, out, stdlib_enabled),
         Item::Namespace(ns) => {
             for i in &ns.items {
-                collect_from_item(i, base_dir, loaded, out)?;
+                collect_from_item(i, base_dir, loaded, out, stdlib_enabled)?;
             }
             Ok(())
         }
@@ -66,6 +76,7 @@ fn load_import(
     base_dir: &Path,
     loaded: &mut HashSet<String>,
     out: &mut Vec<Item>,
+    stdlib_enabled: bool,
 ) -> CompileResult<()> {
     let key = imp.path.clone();
     if loaded.contains(&key) {
@@ -73,7 +84,7 @@ fn load_import(
     }
     loaded.insert(key.clone());
 
-    let path = resolve_path(&imp.path, base_dir)?;
+    let path = resolve_path(&imp.path, base_dir, stdlib_enabled)?;
     let Some(path) = path else {
         // Unknown import (e.g. pure marker for builtins like bstd.io) — OK
         return Ok(());
@@ -85,7 +96,7 @@ fn load_import(
     let dep_dir = path.parent().unwrap_or(base_dir);
     let dep = parse_str(&source)?;
     // Recurse first so transitive deps come earlier
-    resolve_imports(&dep, dep_dir, loaded, out)?;
+    resolve_imports(&dep, dep_dir, loaded, out, stdlib_enabled)?;
     for item in dep.items {
         match &item {
             Item::Import(_) => {}
@@ -95,10 +106,20 @@ fn load_import(
     Ok(())
 }
 
-fn resolve_path(import_path: &str, base_dir: &Path) -> CompileResult<Option<PathBuf>> {
+fn resolve_path(
+    import_path: &str,
+    base_dir: &Path,
+    stdlib_enabled: bool,
+) -> CompileResult<Option<PathBuf>> {
     // bstd.* is provided by VM natives; `.rt` stubs are API docs only.
     if import_path.starts_with("bstd.") || import_path == "bstd" {
-        return Ok(None);
+        if stdlib_enabled {
+            return Ok(None);
+        }
+        return Err(CompileError::resolve(
+            format!("cannot resolve import '{}' with --no-stdlib", import_path),
+            crate::span::Span::default(),
+        ));
     }
 
     // Relative / package path: foo.bar → foo/bar.rt or foo.bar.rt

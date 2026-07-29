@@ -1,0 +1,89 @@
+import bstd.io;
+
+// ── Generator / Enumerator / yield-аналог ─────────────────────────────────────
+//
+// Generator.From(list)           → итератор по существующему массиву
+// Generator.Range(start, end)    → целочисленный диапазон [start, end)
+// Generator.Range(start, end, step) → с шагом
+// Generator.Repeat(value)        → бесконечный поток одного значения
+// Generator.Repeat(value, n)     → n повторений
+// Generator.Empty()              → пустой итератор
+//
+// gen.HasNext()  → bool
+// gen.Next()     → следующее значение (null после конца)
+// gen.Reset()    → перемотать в начало
+// gen.ToList()   → собрать оставшиеся элементы в массив
+
+// Пример 1: Range — обход диапазона
+void RangeDemo() {
+    print("--- Range 0..9 step 2 ---");
+    var evens = Generator.Range(0, 10, 2);
+    while (evens.HasNext()) {
+        var v = evens.Next();
+        print(v);
+    }
+}
+
+// Пример 2: From — генератор из обычного массива с фильтром внутри цикла
+void FromDemo() {
+    print("--- From array, filter >3 ---");
+    var nums = [1, 2, 3, 4, 5, 6];
+    var gen = Generator.From(nums);
+    var result = new List<int> {};
+    while (gen.HasNext()) {
+        var v = gen.Next();
+        if (v > 3) { result.Add(v); }
+    }
+    print(result);
+}
+
+// Пример 3: Repeat — конечный источник данных
+void RepeatDemo() {
+    print("--- Repeat 42 x 4 ---");
+    var r = Generator.Repeat(42, 4);
+    while (r.HasNext()) {
+        print(r.Next());
+    }
+}
+
+// Пример 4: вручную эмулируем yield через функцию-фабрику
+// (GeneratorOf(list) — паттерн «enumerator» с состоянием)
+int FibGen(n: int) {
+    // Строим первые n чисел Фибоначчи и кладём в генератор
+    var items = new List<int> {};
+    var a = 0;
+    var b = 1;
+    for (var i = 0; i < n; i++) {
+        items.Add(a);
+        var tmp = a + b;
+        a = b;
+        b = tmp;
+    }
+    return items;       // возвращаем список, упаковываем снаружи
+}
+
+void FibDemo() {
+    print("--- Fibonacci generator (first 10) ---");
+    var fibs = Generator.From(FibGen(10));
+    while (fibs.HasNext()) {
+        print(fibs.Next());
+    }
+}
+
+// Пример 5: ToList — собрать остаток после частичного потребления
+void ToListDemo() {
+    print("--- ToList after partial consume ---");
+    var r = Generator.Range(0, 6);
+    var skipped = r.Next();   // пропустить 0
+    skipped = r.Next();       // пропустить 1
+    var rest = r.ToList();
+    print(rest);              // [2, 3, 4, 5]
+}
+
+void Main() {
+    RangeDemo();
+    FromDemo();
+    RepeatDemo();
+    FibDemo();
+    ToListDemo();
+}

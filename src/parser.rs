@@ -1407,42 +1407,62 @@ impl Parser {
         let mut cases = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
             if self.match_kind(&[TokenKind::Case]) {
-                let pattern = self.parse_expression()?;
-                let pattern_bind = if self.check_ident() {
+                // Parse one or more patterns separated by `|`
+                let mut patterns = Vec::new();
+                loop {
+                    let pat_expr = self.parse_expression()?;
+                    // Check for range `..` (two dots)
+                    if self.check(&TokenKind::DotDot) {
+                        self.advance();
+                        let end_expr = self.parse_expression()?;
+                        patterns.push(crate::ast::SwitchPattern::Range(pat_expr, end_expr));
+                    } else {
+                        patterns.push(crate::ast::SwitchPattern::Expr(pat_expr));
+                    }
+                    // Multi-pattern: `|`
+                    if self.check(&TokenKind::Pipe) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                // Optional binding: `case 42 x:`  (bind matched value to `x`)
+                let pattern_bind = if self.check_ident()
+                    && !self.check_ident_str("when")
+                    && !self.check(&TokenKind::Colon)
+                    && !self.is_keyword_current()
+                {
                     Some(self.expect_ident()?.0)
                 } else {
                     None
                 };
+                // Optional guard: `when <expr>`
+                let guard = if self.check_ident_str("when") {
+                    self.advance(); // consume `when`
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
                 self.expect(TokenKind::Colon, "expected ':'")?;
-                let mut body = Vec::new();
-                while !matches!(
-                    self.current().kind,
-                    TokenKind::Case | TokenKind::Default | TokenKind::RBrace
-                ) {
-                    body.push(self.parse_statement()?);
-                }
+                let body = self.parse_switch_body()?;
                 cases.push(SwitchCase {
-                    pattern: Some(pattern),
+                    patterns,
                     pattern_bind,
+                    guard,
                     body,
                 });
             } else if self.match_kind(&[TokenKind::Default]) {
                 self.expect(TokenKind::Colon, "expected ':'")?;
-                let mut body = Vec::new();
-                while !matches!(
-                    self.current().kind,
-                    TokenKind::Case | TokenKind::Default | TokenKind::RBrace
-                ) {
-                    body.push(self.parse_statement()?);
-                }
+                let body = self.parse_switch_body()?;
                 cases.push(SwitchCase {
-                    pattern: None,
+                    patterns: vec![],
                     pattern_bind: None,
+                    guard: None,
                     body,
                 });
             } else {
                 return Err(CompileError::syntax(
-                    "expected case or default",
+                    "expected 'case' or 'default'",
                     self.current().span,
                 ));
             }
@@ -1453,6 +1473,26 @@ impl Parser {
             cases,
             span: start.merge(self.previous().span),
         })
+    }
+
+    fn parse_switch_body(&mut self) -> CompileResult<Vec<Stmt>> {
+        let mut body = Vec::new();
+        while !matches!(
+            self.current().kind,
+            TokenKind::Case | TokenKind::Default | TokenKind::RBrace
+        ) && !self.is_at_end()
+        {
+            body.push(self.parse_statement()?);
+        }
+        Ok(body)
+    }
+
+    fn check_ident_str(&self, s: &str) -> bool {
+        matches!(&self.current().kind, TokenKind::Ident(name) if name == s)
+    }
+
+    fn is_keyword_current(&self) -> bool {
+        !matches!(self.current().kind, TokenKind::Ident(_))
     }
 
     fn parse_match(&mut self) -> CompileResult<Stmt> {

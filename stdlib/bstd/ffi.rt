@@ -1,11 +1,15 @@
 // bstd — notes for FFI (see language attributes, not loaded as .rt)
 
-// [DllImport: "lib.so"] / [link: "lib.dll"]  — load shared library
-// [include: "header.h"]                     — for C codegen
-// [c: "..."] / [cembed: "..."]              — compile embedded C to a temp DLL/SO
+// [DllImport: "lib.so"] / [link: "lib.dll"]  — load shared library (no gcc)
+// [bind: "header.h"] / [include: "header.h"] — parse C prototypes → FFI imports
+// [c: "..."] / [cembed: "..."]              — compile embedded C (needs gcc/clang/cl)
 // [abi: "cdecl"|"stdcall"|"system"]         — calling convention
 // [export: "c_name"]                        — export RayTask fn for C / rename symbol
 //
-// Bodyless function declarations become FFI imports:
+// Prefer headers + prebuilt DLLs/SOs — fully inside RayTask, no C compiler:
 //   [DllImport: "kernel32.dll"]
-//   uint GetTickCount();
+//   [bind: "win_time.h"]
+//   void Main() { print(GetTickCount()); }
+//
+// Or generate decls:
+//   raytask bind win_time.h --lib kernel32.dll

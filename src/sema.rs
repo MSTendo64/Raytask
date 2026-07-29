@@ -106,6 +106,10 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
+        Self::with_stdlib(true)
+    }
+
+    pub fn with_stdlib(stdlib_enabled: bool) -> Self {
         let mut tc = Self {
             errors: Vec::new(),
             warnings: Vec::new(),
@@ -123,31 +127,33 @@ impl TypeChecker {
             in_loop: 0,
             in_unsafe: false,
         };
-        for (name, params, ret) in builtin_functions() {
-            let params: Vec<_> = params
-                .into_iter()
-                .enumerate()
-                .map(|(i, t)| (format!("a{}", i), t))
-                .collect();
-            tc.functions.insert(
-                name.to_string(),
-                FuncSig {
-                    name: name.to_string(),
-                    params,
-                    ret,
-                    type_params: vec![],
-                    is_method: false,
-                    is_static: true,
-                    span: Span::default(),
-                },
-            );
+        if stdlib_enabled {
+            for (name, params, ret) in builtin_functions() {
+                let params: Vec<_> = params
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, t)| (format!("a{}", i), t))
+                    .collect();
+                tc.functions.insert(
+                    name.to_string(),
+                    FuncSig {
+                        name: name.to_string(),
+                        params,
+                        ret,
+                        type_params: vec![],
+                        is_method: false,
+                        is_static: true,
+                        span: Span::default(),
+                    },
+                );
+            }
+            // Built-in collection types (stubs)
+            tc.register_builtin_collections(true);
         }
-        // Built-in collection types (stubs)
-        tc.register_builtin_collections();
         tc
     }
 
-    fn register_builtin_collections(&mut self) {
+    fn register_builtin_collections(&mut self, stdlib_enabled: bool) {
         let mut list = TypeDef {
             name: "List".into(),
             kind: TypeDefKind::Class,
@@ -219,6 +225,109 @@ impl TypeChecker {
                 span: Span::default(),
             },
         );
+        for (name, params, ret) in [
+            (
+                "Distinct",
+                vec![],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "Sort",
+                vec![],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "SortDesc",
+                vec![],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "Reverse",
+                vec![],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "Take",
+                vec![("count".into(), Ty::Int)],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "Skip",
+                vec![("count".into(), Ty::Int)],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "IndexOf",
+                vec![("item".into(), Ty::TypeParam("T".into()))],
+                Ty::Int,
+            ),
+            (
+                "Copy",
+                vec![],
+                Ty::Generic {
+                    name: "List".into(),
+                    args: vec![Ty::TypeParam("T".into())],
+                },
+            ),
+            (
+                "Chunk",
+                vec![("size".into(), Ty::Int)],
+                Ty::Array {
+                    elem: Box::new(Ty::Array {
+                        elem: Box::new(Ty::TypeParam("T".into())),
+                        dims: 1,
+                    }),
+                    dims: 1,
+                },
+            ),
+            (
+                "Range",
+                vec![("start_or_count".into(), Ty::Int), ("count".into(), Ty::Int)],
+                Ty::Array {
+                    elem: Box::new(Ty::Int),
+                    dims: 1,
+                },
+            ),
+            (
+                "Fill",
+                vec![("value".into(), Ty::Dyn), ("count".into(), Ty::Int)],
+                Ty::Array {
+                    elem: Box::new(Ty::Dyn),
+                    dims: 1,
+                },
+            ),
+        ] {
+            list.methods.insert(
+                name.into(),
+                FuncSig {
+                    name: name.into(),
+                    params,
+                    ret,
+                    type_params: vec![],
+                    is_method: true,
+                    is_static: false,
+                    span: Span::default(),
+                },
+            );
+        }
         self.types.insert("List".into(), list);
 
         // string members as a pseudo-type for member lookup
@@ -314,6 +423,48 @@ impl TypeChecker {
                 span: Span::default(),
             },
         );
+        for (name, params, ret) in [
+            ("PadLeft", vec![("width".into(), Ty::Int), ("ch".into(), Ty::String)], Ty::String),
+            ("PadRight", vec![("width".into(), Ty::Int), ("ch".into(), Ty::String)], Ty::String),
+            ("Repeat", vec![("count".into(), Ty::Int)], Ty::String),
+            ("Reverse", vec![], Ty::String),
+            (
+                "Chars",
+                vec![],
+                Ty::Array {
+                    elem: Box::new(Ty::Char),
+                    dims: 1,
+                },
+            ),
+            (
+                "Lines",
+                vec![],
+                Ty::Array {
+                    elem: Box::new(Ty::String),
+                    dims: 1,
+                },
+            ),
+            ("ParseInt", vec![], Ty::Int),
+            ("ParseFloat", vec![], Ty::Double),
+            ("IsEmpty", vec![], Ty::Bool),
+            ("IsWhitespace", vec![], Ty::Bool),
+            ("Count", vec![("sub".into(), Ty::String)], Ty::Int),
+            ("Remove", vec![("index".into(), Ty::Int), ("count".into(), Ty::Int)], Ty::String),
+            ("Insert", vec![("index".into(), Ty::Int), ("text".into(), Ty::String)], Ty::String),
+        ] {
+            string_td.methods.insert(
+                name.into(),
+                FuncSig {
+                    name: name.into(),
+                    params,
+                    ret,
+                    type_params: vec![],
+                    is_method: true,
+                    is_static: false,
+                    span: Span::default(),
+                },
+            );
+        }
         self.types.insert("string".into(), string_td);
 
         // int.Parse etc.
@@ -346,7 +497,11 @@ impl TypeChecker {
             self.types.insert(prim.into(), td);
         }
 
-        crate::stdlib_types::register_into(&mut self.types);
+        if stdlib_enabled {
+        if stdlib_enabled {
+            crate::stdlib_types::register_into(&mut self.types);
+        }
+        }
     }
 
     pub fn check(mut self, program: &Program) -> TypeCheckReport {
@@ -1308,22 +1463,33 @@ impl TypeChecker {
             Stmt::Switch { expr, cases, .. } => {
                 let st = self.check_expr(expr);
                 for case in cases {
-                    if let Some(pat) = &case.pattern {
-                        let pt = self.check_expr(pat);
-                        // pattern should be compatible with switch expr
-                        if !pt.is_assignable_to(&st)
-                            && !st.is_assignable_to(&pt)
-                            && !matches!(st, Ty::Dyn)
-                            && !matches!(pt, Ty::Dyn)
-                        {
-                            self.warn(
-                                format!(
-                                    "switch case type '{}' may not match switch expression '{}'",
-                                    pt, st
-                                ),
-                                pat.span(),
-                            );
+                    for pat in &case.patterns {
+                        let check_pat = |sema: &mut Self, e: &Expr| {
+                            let pt = sema.check_expr(e);
+                            if !pt.is_assignable_to(&st)
+                                && !st.is_assignable_to(&pt)
+                                && !matches!(st, Ty::Dyn)
+                                && !matches!(pt, Ty::Dyn)
+                            {
+                                sema.warn(
+                                    format!(
+                                        "switch case type '{}' may not match switch expression '{}'",
+                                        pt, st
+                                    ),
+                                    e.span(),
+                                );
+                            }
+                        };
+                        match pat {
+                            crate::ast::SwitchPattern::Expr(e) => check_pat(self, e),
+                            crate::ast::SwitchPattern::Range(lo, hi) => {
+                                check_pat(self, lo);
+                                check_pat(self, hi);
+                            }
                         }
+                    }
+                    if let Some(g) = &case.guard {
+                        self.check_expr(g);
                     }
                     self.in_loop += 1; // allow break
                     for s in &case.body {
@@ -2073,12 +2239,99 @@ impl TypeChecker {
             Ty::Named(n) => n.clone(),
             Ty::Generic { name, .. } => name.clone(),
             Ty::String => "string".into(),
-            Ty::Array { .. } => {
-                // Array Length / fake methods
-                if name == "Length" || name == "Count" {
-                    return None; // property
-                }
-                return None;
+            Ty::Array { elem, dims } => {
+                let same = Ty::Array {
+                    elem: elem.clone(),
+                    dims: *dims,
+                };
+                let sig = match name {
+                    "Distinct" | "Sort" | "SortAsc" | "SortDesc" | "Reverse" | "Copy" => {
+                        FuncSig {
+                            name: name.into(),
+                            params: vec![],
+                            ret: same,
+                            type_params: vec![],
+                            is_method: true,
+                            is_static: false,
+                            span: Span::default(),
+                        }
+                    }
+                    "Take" | "Skip" | "Chunk" => FuncSig {
+                        name: name.into(),
+                        params: vec![("count".into(), Ty::Int)],
+                        ret: if name == "Chunk" {
+                            Ty::Array {
+                                elem: Box::new(Ty::Array {
+                                    elem: elem.clone(),
+                                    dims: 1,
+                                }),
+                                dims: 1,
+                            }
+                        } else {
+                            same
+                        },
+                        type_params: vec![],
+                        is_method: true,
+                        is_static: false,
+                        span: Span::default(),
+                    },
+                    "Count" => FuncSig {
+                        name: name.into(),
+                        params: vec![],
+                        ret: Ty::Int,
+                        type_params: vec![],
+                        is_method: true,
+                        is_static: false,
+                        span: Span::default(),
+                    },
+                    "IndexOf" => FuncSig {
+                        name: name.into(),
+                        params: vec![("item".into(), Ty::Dyn)],
+                        ret: Ty::Int,
+                        type_params: vec![],
+                        is_method: true,
+                        is_static: false,
+                        span: Span::default(),
+                    },
+                    "Flatten" => FuncSig {
+                        name: name.into(),
+                        params: vec![],
+                        ret: match &**elem {
+                            Ty::Array { elem: inner, .. } => Ty::Array {
+                                elem: inner.clone(),
+                                dims: 1,
+                            },
+                            _ => same,
+                        },
+                        type_params: vec![],
+                        is_method: true,
+                        is_static: false,
+                        span: Span::default(),
+                    },
+                    "Zip" => FuncSig {
+                        name: name.into(),
+                        params: vec![(
+                            "other".into(),
+                            Ty::Array {
+                                elem: Box::new(Ty::Dyn),
+                                dims: 1,
+                            },
+                        )],
+                        ret: Ty::Array {
+                            elem: Box::new(Ty::Array {
+                                elem: Box::new(Ty::Dyn),
+                                dims: 1,
+                            }),
+                            dims: 1,
+                        },
+                        type_params: vec![],
+                        is_method: true,
+                        is_static: false,
+                        span: Span::default(),
+                    },
+                    _ => return None,
+                };
+                return Some(sig);
             }
             Ty::Dyn => return Some(FuncSig {
                 name: name.into(),
@@ -2177,12 +2430,45 @@ impl TypeChecker {
                 self.err(format!("string has no member '{}'", field), span);
                 Ty::Error
             }
-            Ty::Array { .. } => {
+            Ty::Array { elem, dims } => {
                 if field == "Length" || field == "Count" {
                     return Ty::Int;
                 }
-                self.err(format!("array has no member '{}'", field), span);
-                Ty::Error
+                let same = Ty::Array {
+                    elem: elem.clone(),
+                    dims: *dims,
+                };
+                let listy = Ty::Array {
+                    elem: elem.clone(),
+                    dims: 1,
+                };
+                return match field {
+                    "Distinct" | "Sort" | "SortAsc" | "SortDesc" | "Reverse" | "Take"
+                    | "Skip" | "Copy" => same,
+                    "IndexOf" => Ty::Int,
+                    "Chunk" => Ty::Array {
+                        elem: Box::new(listy),
+                        dims: 1,
+                    },
+                    "Flatten" => match &**elem {
+                        Ty::Array { elem: inner, .. } => Ty::Array {
+                            elem: inner.clone(),
+                            dims: 1,
+                        },
+                        _ => same,
+                    },
+                    "Zip" => Ty::Array {
+                        elem: Box::new(Ty::Array {
+                            elem: Box::new(Ty::Dyn),
+                            dims: 1,
+                        }),
+                        dims: 1,
+                    },
+                    _ => {
+                        self.err(format!("array has no member '{}'", field), span);
+                        Ty::Error
+                    }
+                };
             }
             Ty::Named(name) | Ty::Generic { name, .. } => {
                 let mut current = Some(name.clone());
@@ -2503,37 +2789,45 @@ impl Default for TypeChecker {
 
 /// Public entry: typecheck a program and return a report.
 pub fn typecheck(program: &Program) -> TypeCheckReport {
-    TypeChecker::new().check(program)
+    typecheck_with_stdlib(program, true)
+}
+
+pub fn typecheck_with_stdlib(program: &Program, stdlib_enabled: bool) -> TypeCheckReport {
+    TypeChecker::with_stdlib(stdlib_enabled).check(program)
 }
 
 /// Typecheck and return Err on first error.
 pub fn typecheck_or_err(program: &Program) -> CompileResult<()> {
-    typecheck(program).into_result()
+    typecheck_or_err_with_stdlib(program, true)
+}
+
+pub fn typecheck_or_err_with_stdlib(program: &Program, stdlib_enabled: bool) -> CompileResult<()> {
+    typecheck_with_stdlib(program, stdlib_enabled).into_result()
 }
 
 fn is_primitive_name(n: &str) -> bool {
-    matches!(
-        n,
+    match n {
         "void"
-            | "bool"
-            | "byte"
-            | "sbyte"
-            | "short"
-            | "ushort"
-            | "int"
-            | "uint"
-            | "long"
-            | "ulong"
-            | "float"
-            | "double"
-            | "decimal"
-            | "char"
-            | "string"
-            | "dyn"
-            | "var"
-            | "ptr"
-            | "object"
-    )
+        | "bool"
+        | "byte"
+        | "sbyte"
+        | "short"
+        | "ushort"
+        | "int"
+        | "uint"
+        | "long"
+        | "ulong"
+        | "float"
+        | "double"
+        | "decimal"
+        | "char"
+        | "string"
+        | "dyn"
+        | "var"
+        | "ptr"
+        | "object" => true,
+        _ => false,
+    }
 }
 
 fn is_builtin_name(n: &str) -> bool {

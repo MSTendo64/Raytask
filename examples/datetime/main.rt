@@ -1,0 +1,69 @@
+import bstd.io;
+import bstd.time;
+
+// ── DateTime и TimeSpan ────────────────────────────────────────────────────────
+//
+// DateTime.Now          → текущее местное время (объект DateTime)
+// DateTime.UtcNow       → UTC
+// DateTime.Parse(str)   → разобрать ISO 8601 "yyyy-MM-dd" / "yyyy-MM-ddTHH:mm:ss"
+// dt.Format(fmt)        → форматировать ("yyyy-MM-dd HH:mm:ss")
+// dt.ToString()         → "yyyy-MM-dd HH:mm:ss"
+// dt.Year / .Month / .Day / .Hour / .Minute / .Second
+// dt.Add(span)          → новый DateTime + TimeSpan
+// dt.Subtract(span)     → новый DateTime - TimeSpan
+// dt.Diff(other)        → TimeSpan разницы
+//
+// TimeSpan.FromMilliseconds(n)
+// TimeSpan.FromSeconds(n)
+// TimeSpan.FromMinutes(n)
+// TimeSpan.FromHours(n)
+// TimeSpan.Zero
+// span.TotalMilliseconds / .TotalSeconds
+// span.Days / .Hours / .Minutes / .Seconds / .Milliseconds
+// span.Add(other) / .Subtract(other)
+// span.ToString()   → "d.HH:mm:ss.mmm" или "HH:mm:ss.mmm"
+
+void Main() {
+    // --- Текущее время ---
+    var now = DateTime.Now;
+    print($"Now:  {now.ToString()}");
+    print($"Year: {now.Year}  Month: {now.Month}  Day: {now.Day}");
+    print($"Hour: {now.Hour}  Min: {now.Minute}  Sec: {now.Second}");
+
+    var utc = DateTime.UtcNow;
+    print($"UTC:  {utc.ToString()}");
+
+    // --- Форматирование ---
+    var fmt = now.Format("dd.MM.yyyy HH:mm");
+    print($"Formatted: {fmt}");
+
+    // --- Парсинг ---
+    var birthday = DateTime.Parse("1990-06-15T12:30:00");
+    print($"Birthday: {birthday.ToString()}");
+    print($"Born in {birthday.Year}");
+
+    // --- TimeSpan ---
+    var oneHour  = TimeSpan.FromHours(1);
+    var thirtyMin = TimeSpan.FromMinutes(30);
+    var sum = oneHour.Add(thirtyMin);
+    print($"1h + 30m = {sum.ToString()}");                    // 01:30:00.000
+    print($"Total seconds: {sum.TotalSeconds}");              // 5400.0
+
+    var tenDays = TimeSpan.FromMilliseconds(864000000);
+    print($"10 days span: {tenDays.Days} days {tenDays.Hours}h");
+
+    // --- Арифметика дат ---
+    var future = now.Add(oneHour);
+    print($"In 1 hour: {future.Format("HH:mm")}");
+
+    var past = now.Subtract(tenDays);
+    print($"10 days ago: {past.Format("yyyy-MM-dd")}");
+
+    // --- Разница ---
+    var diff = now.Diff(birthday);
+    print($"Age in hours: {diff.TotalSeconds / 3600.0}");
+
+    // --- Zero span ---
+    var zero = TimeSpan.Zero;
+    print($"Zero span: {zero.ToString()}");
+}

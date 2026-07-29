@@ -6,6 +6,7 @@
 # RayTask build outputs
 **/dist/
 **/*.rtbc
+**/*.rtdbg
 **/*.c
 !**/*.c.template
 **/*.exe
@@ -22,7 +23,12 @@
 **/*.dylib
 **/*.wasm
 **/*.js
+!editors/vscode/**/*.js
 !**/native_rt/**
+
+# VS Code extension package
+*.vsix
+editors/vscode/*.vsix
 
 # Local packages / registry cache
 .raytask/

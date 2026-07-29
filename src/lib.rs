@@ -5,10 +5,15 @@ pub mod ast;
 pub mod async_rt;
 pub mod bytecode;
 pub mod bytecode_format;
+pub mod c_header;
 pub mod codegen_c;
 pub mod compiler;
+pub mod dap;
+pub mod debug_io;
+pub mod debug_symbols;
 pub mod error;
 pub mod ffi;
+pub mod ffi_bind;
 pub mod gc;
 pub mod lexer;
 pub mod linker;
@@ -18,6 +23,7 @@ pub mod native_codegen;
 pub mod parser;
 pub mod preprocess;
 pub mod project;
+pub mod registry;
 pub mod resolve;
 pub mod sema;
 pub mod span;
@@ -121,6 +127,8 @@ pub struct BuildOptions {
     pub output: Option<std::path::PathBuf>,
     /// Skip typechecker (not recommended)
     pub no_typecheck: bool,
+    /// Disable built-in bstd.* imports, types, and runtime globals.
+    pub no_stdlib: bool,
 }
 
 impl Default for BuildOptions {
@@ -134,6 +142,7 @@ impl Default for BuildOptions {
             platform: Platform::Current,
             output: None,
             no_typecheck: false,
+            no_stdlib: false,
         }
     }
 }
@@ -144,6 +153,8 @@ pub struct RunOptions {
     pub gc: bool,
     pub gc_stress: bool,
     pub no_typecheck: bool,
+    /// Disable built-in bstd.* imports, types, and runtime globals.
+    pub no_stdlib: bool,
 }
 
 impl Default for RunOptions {
@@ -152,17 +163,28 @@ impl Default for RunOptions {
             gc: true,
             gc_stress: false,
             no_typecheck: false,
+            no_stdlib: false,
         }
     }
 }
 
 pub fn parse_source(source: &str) -> CompileResult<ast::Program> {
+    parse_source_with_stdlib(source, true)
+}
+
+pub fn parse_source_with_stdlib(source: &str, stdlib_enabled: bool) -> CompileResult<ast::Program> {
     let defs = crate::preprocess::default_defs(cfg!(debug_assertions));
     let source = crate::preprocess::preprocess(source, &defs);
-    resolve_program(&source, None)
+    let mut program = crate::resolve::resolve_program_with_stdlib(&source, None, stdlib_enabled)?;
+    crate::ffi_bind::expand_c_header_binds(&mut program, None)?;
+    Ok(program)
 }
 
 pub fn parse_file(path: &Path) -> CompileResult<ast::Program> {
+    parse_file_with_stdlib(path, true)
+}
+
+pub fn parse_file_with_stdlib(path: &Path, stdlib_enabled: bool) -> CompileResult<ast::Program> {
     let source = std::fs::read_to_string(path).map_err(|e| {
         crate::error::CompileError::Io {
             message: format!("{}: {}", path.display(), e),
@@ -170,25 +192,46 @@ pub fn parse_file(path: &Path) -> CompileResult<ast::Program> {
     })?;
     let defs = crate::preprocess::default_defs(cfg!(debug_assertions));
     let source = crate::preprocess::preprocess(&source, &defs);
-    resolve_program(&source, Some(path))
+    let mut program =
+        crate::resolve::resolve_program_with_stdlib(&source, Some(path), stdlib_enabled)?;
+    crate::ffi_bind::expand_c_header_binds(&mut program, Some(path))?;
+    Ok(program)
 }
 
 pub fn check_source(source: &str) -> CompileResult<TypeCheckReport> {
-    let program = parse_source(source)?;
-    Ok(typecheck(&program))
+    check_source_with_stdlib(source, true)
+}
+
+pub fn check_source_with_stdlib(
+    source: &str,
+    stdlib_enabled: bool,
+) -> CompileResult<TypeCheckReport> {
+    let program = parse_source_with_stdlib(source, stdlib_enabled)?;
+    Ok(crate::sema::typecheck_with_stdlib(&program, stdlib_enabled))
 }
 
 pub fn compile_bytecode(source: &str) -> CompileResult<Module> {
-    let program = parse_source(source)?;
-    typecheck_or_err(&program)?;
+    compile_bytecode_with_stdlib(source, true)
+}
+
+pub fn compile_bytecode_with_stdlib(source: &str, stdlib_enabled: bool) -> CompileResult<Module> {
+    let program = parse_source_with_stdlib(source, stdlib_enabled)?;
+    crate::sema::typecheck_or_err_with_stdlib(&program, stdlib_enabled)?;
     let program = monomorphize(program);
-    Compiler::new().compile(&program)
+    Compiler::new().with_stdlib(stdlib_enabled).compile(&program)
 }
 
 pub fn compile_bytecode_unchecked(source: &str) -> CompileResult<Module> {
-    let program = parse_source(source)?;
+    compile_bytecode_unchecked_with_stdlib(source, true)
+}
+
+pub fn compile_bytecode_unchecked_with_stdlib(
+    source: &str,
+    stdlib_enabled: bool,
+) -> CompileResult<Module> {
+    let program = parse_source_with_stdlib(source, stdlib_enabled)?;
     let program = monomorphize(program);
-    Compiler::new().compile(&program)
+    Compiler::new().with_stdlib(stdlib_enabled).compile(&program)
 }
 
 pub fn run_source(source: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -197,9 +240,9 @@ pub fn run_source(source: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run_source_with(source: &str, opts: &RunOptions) -> Result<(), Box<dyn std::error::Error>> {
     let module = if opts.no_typecheck {
-        compile_bytecode_unchecked(source)?
+        compile_bytecode_unchecked_with_stdlib(source, !opts.no_stdlib)?
     } else {
-        compile_bytecode(source)?
+        compile_bytecode_with_stdlib(source, !opts.no_stdlib)?
     };
     crate::ffi::prepare_module_ffi(&module.ffi, None)?;
     let mut vm = Vm::with_gc(
@@ -219,12 +262,12 @@ pub fn run_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run_file_with(path: &Path, opts: &RunOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let program = parse_file(path)?;
+    let program = parse_file_with_stdlib(path, !opts.no_stdlib)?;
     if !opts.no_typecheck {
-        typecheck_or_err(&program)?;
+        crate::sema::typecheck_or_err_with_stdlib(&program, !opts.no_stdlib)?;
     }
     let program = monomorphize(program);
-    let module = Compiler::new().compile(&program)?;
+    let module = Compiler::new().with_stdlib(!opts.no_stdlib).compile(&program)?;
     let base = path.parent();
     crate::ffi::prepare_module_ffi(&module.ffi, base)?;
     let mut vm = Vm::with_gc(
@@ -271,29 +314,54 @@ fn native_codegen_opts(options: &BuildOptions) -> CodegenOptions {
 
 pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dyn std::error::Error>> {
     let path_buf = Path::new(path);
-    let program = parse_file(path_buf)?;
+    let program = parse_file_with_stdlib(path_buf, !options.no_stdlib)?;
     if !options.no_typecheck {
-        let report = typecheck(&program);
+        let report = crate::sema::typecheck_with_stdlib(&program, !options.no_stdlib);
         if !report.ok() {
             eprint!("{}", report.format_all());
             return Err(report.errors.into_iter().next().unwrap().into());
         }
     }
     let program = monomorphize(program);
-    let module = Compiler::new().compile(&program)?;
+    let mut module = Compiler::new()
+        .with_stdlib(!options.no_stdlib)
+        .with_source(path_buf.display().to_string())
+        .compile(&program)?;
+    crate::debug_symbols::stamp_source(&mut module, path_buf);
+
+    let emit_symbols = |artifact: &Path, module: &Module| -> Result<(), Box<dyn std::error::Error>> {
+        if !options.debug {
+            return Ok(());
+        }
+        let sym_path = crate::debug_symbols::sidecar_path(artifact);
+        let sym = crate::debug_symbols::DebugSymbols::from_module(module, path_buf, Some(artifact));
+        sym.write_file(&sym_path)?;
+        eprintln!("debug symbols: {}", sym_path.display());
+        Ok(())
+    };
 
     match options.target {
         Target::Bytecode => {
-            let bytes = serialize_module(&module);
-            let out = path_buf.with_extension("rtbc");
+            let mut emit = module.clone();
+            if !options.debug {
+                crate::debug_symbols::strip_module_debug(&mut emit);
+            }
+            let bytes = serialize_module(&emit);
+            let out = options
+                .output
+                .clone()
+                .unwrap_or_else(|| path_buf.with_extension("rtbc"));
             std::fs::write(&out, bytes)?;
+            emit_symbols(&out, &module)?;
             Ok(out.display().to_string())
         }
         Target::Native => {
             let c = CCodegen::with_options(native_codegen_opts(options)).generate(&program)?;
             let out = path_buf.with_extension("c");
             std::fs::write(&out, &c)?;
-            let exe = path_buf.with_extension(if cfg!(windows) { "exe" } else { "" });
+            let exe = options.output.clone().unwrap_or_else(|| {
+                path_buf.with_extension(if cfg!(windows) { "exe" } else { "" })
+            });
             let exe_str = exe.display().to_string();
             let out_str = out.display().to_string();
             let link_libs = crate::codegen_c::collect_link_libs(&program);
@@ -301,6 +369,9 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
                 let mut cmd = std::process::Command::new(cc);
                 if cc == "cl" {
                     cmd.arg(&out_str).arg(format!("/Fe:{}", exe_str));
+                    if options.debug {
+                        cmd.arg("/Zi").arg("/Od");
+                    }
                     for lib in &link_libs {
                         if lib.ends_with(".dll") || lib.ends_with(".lib") {
                             cmd.arg(lib);
@@ -309,7 +380,13 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
                         }
                     }
                 } else {
-                    cmd.arg(&out_str).arg("-O2").arg("-o").arg(&exe_str);
+                    cmd.arg(&out_str);
+                    if options.debug {
+                        cmd.arg("-g").arg("-O0");
+                    } else {
+                        cmd.arg("-O2");
+                    }
+                    cmd.arg("-o").arg(&exe_str);
                     for lib in &link_libs {
                         if lib.ends_with(".c") {
                             cmd.arg(lib);
@@ -329,24 +406,32 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
                 let status = cmd.status();
                 if let Ok(st) = status {
                     if st.success() {
+                        emit_symbols(Path::new(&exe_str), &module)?;
                         return Ok(exe_str);
                     }
                 }
             }
             if cfg!(windows) {
-                let status = std::process::Command::new("wsl")
-                    .arg("gcc")
-                    .arg(&out_str.replace('\\', "/"))
-                    .arg("-O2")
+                let mut cmd = std::process::Command::new("wsl");
+                cmd.arg("gcc")
+                    .arg(&out_str.replace('\\', "/"));
+                if options.debug {
+                    cmd.arg("-g").arg("-O0");
+                } else {
+                    cmd.arg("-O2");
+                }
+                let status = cmd
                     .arg("-o")
                     .arg(exe_str.replace('\\', "/").trim_end_matches(".exe"))
                     .status();
                 if let Ok(st) = status {
                     if st.success() {
+                        emit_symbols(Path::new(&exe_str), &module)?;
                         return Ok(exe_str);
                     }
                 }
             }
+            emit_symbols(&out, &module)?;
             Ok(out_str)
         }
         Target::App => {
@@ -356,6 +441,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
                 options.platform,
                 options.output.as_deref(),
             )?;
+            emit_symbols(&result.output, &module)?;
             Ok(format!(
                 "{} (platform={}, bytecode={})",
                 result.output.display(),
@@ -368,6 +454,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.primary, &module)?;
             Ok(r.primary.display().to_string())
         }
         Target::Web => {
@@ -375,6 +462,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.primary, &module)?;
             Ok(r.primary.display().to_string())
         }
         Target::Mobile => {
@@ -382,6 +470,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.primary, &module)?;
             Ok(r.primary.display().to_string())
         }
         Target::Embedded => {
@@ -389,6 +478,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.primary, &module)?;
             Ok(r.primary.display().to_string())
         }
         Target::Kernel => {
@@ -396,6 +486,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.primary, &module)?;
             Ok(r.primary.display().to_string())
         }
         Target::NativeBin => {
@@ -415,6 +506,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.output, &module)?;
             Ok(format!(
                 "{} (native-bin {}, objects={})",
                 r.output.display(),
@@ -432,6 +524,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.output, &module)?;
             Ok(format!(
                 "{} (efi, objects={})",
                 r.output.display(),
@@ -448,6 +541,7 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
+            emit_symbols(&r.output, &module)?;
             Ok(format!(
                 "{} (raw, objects={})",
                 r.output.display(),

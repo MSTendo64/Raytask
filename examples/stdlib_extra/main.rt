@@ -1,0 +1,177 @@
+// Extended standard library examples
+// Math, String, List, Convert, Env modules
+
+func main() {
+    demo_math();
+    demo_string();
+    demo_list();
+    demo_convert();
+    demo_env();
+}
+
+// ── Math extended ─────────────────────────────────────────────────────────────
+func demo_math() {
+    print_ln("=== Math ===");
+
+    // Basic
+    print_ln(Math.Abs(-7));           // 7
+    print_ln(Math.Sqrt(144.0));       // 12.0
+    print_ln(Math.Pow(2.0, 10.0));    // 1024.0
+
+    // Extended
+    print_ln(Math.Clamp(150, 0, 100));   // 100
+    print_ln(Math.Lerp(0.0, 100.0, 0.25)); // 25.0
+    print_ln(Math.Sign(-42));            // -1
+    print_ln(Math.Sign(0));              // 0
+    print_ln(Math.Sign(5));              // 1
+    print_ln(Math.Log2(1024.0));         // 10.0
+    print_ln(Math.Log10(1000.0));        // 3.0
+    print_ln(Math.Cbrt(27.0));           // 3.0
+    print_ln(Math.Hypot(3.0, 4.0));      // 5.0
+    print_ln(Math.Truncate(3.9));        // 3
+    print_ln(Math.IsNaN(0.0 / 0.0));     // true  (if supported)
+    print_ln(Math.Atan2(1.0, 1.0));      // ~0.785398 (pi/4)
+    print_ln(Math.Tau);                  // ~6.2831853
+    print_ln(Math.PI);                   // ~3.1415926
+    print_ln(Math.Sinh(1.0));            // ~1.1752
+    print_ln(Math.Cosh(0.0));            // 1.0
+}
+
+// ── String extended ────────────────────────────────────────────────────────────
+func demo_string() {
+    print_ln("=== String ===");
+
+    var s = "Hello, RayTask!";
+
+    // Existing
+    print_ln(s.ToUpper());          // HELLO, RAYTASK!
+    print_ln(s.ToLower());          // hello, raytask!
+    print_ln(s.Contains("Ray"));    // true
+    print_ln(s.Replace("RayTask", "World")); // Hello, World!
+
+    // New
+    print_ln(s.Reverse());          // !ksaTyaR ,olleH
+    print_ln(s.Repeat(2));          // Hello, RayTask!Hello, RayTask!
+    print_ln("42".PadLeft(6, "0")); // 000042
+    print_ln("Hi".PadRight(8));     // "Hi      "
+    print_ln("  spaces  ".Trim());  // "spaces"
+
+    // Chars & Lines
+    var chars = "abc".Chars();
+    print_ln(chars);   // ['a', 'b', 'c']
+
+    var text = "line1\nline2\nline3";
+    var lines = text.Lines();
+    print_ln(lines);   // ["line1", "line2", "line3"]
+
+    // Parse
+    print_ln("123".ParseInt());     // 123
+    print_ln("3.14".ParseFloat());  // 3.14
+    print_ln("".IsEmpty());         // true
+    print_ln("   ".IsWhitespace()); // true
+
+    // Static methods
+    var parts = ["one", "two", "three"];
+    print_ln(String.Join(", ", parts));  // one, two, three
+
+    print_ln(String.Format("Hello {0}, you are {1} years old", "Alice", 30));
+    // Hello Alice, you are 30 years old
+
+    // Count, Remove, Insert
+    print_ln("banana".Count("a"));  // 3
+    print_ln("hello".Remove(1, 3)); // ho
+    print_ln("hello".Insert(2, "XY")); // heXYllo
+}
+
+// ── List extended ─────────────────────────────────────────────────────────────
+func demo_list() {
+    print_ln("=== List ===");
+
+    var nums = [5, 3, 8, 1, 9, 2, 7];
+
+    // Sort
+    print_ln(nums.Sort());         // [1, 2, 3, 5, 7, 8, 9]
+    print_ln(nums.SortDesc());     // [9, 8, 7, 5, 3, 2, 1]
+    print_ln(nums.Reverse());      // [7, 2, 9, 1, 8, 3, 5]
+
+    // Take / Skip / Count
+    print_ln(nums.Take(3));        // [5, 3, 8]
+    print_ln(nums.Skip(4));        // [9, 2, 7]
+    print_ln(nums.Count());        // 7
+    print_ln(nums.IndexOf(8));     // 2
+
+    // Distinct
+    var dups = [1, 2, 2, 3, 3, 3, 4];
+    print_ln(dups.Distinct());     // [1, 2, 3, 4]
+
+    // Flatten
+    var nested = [[1, 2], [3, 4], [5]];
+    print_ln(nested.Flatten());    // [1, 2, 3, 4, 5]
+
+    // Zip
+    var a = [1, 2, 3];
+    var b = ["a", "b", "c"];
+    print_ln(a.Zip(b));            // [[1, "a"], [2, "b"], [3, "c"]]
+
+    // Chunk
+    var words = ["a", "b", "c", "d", "e"];
+    print_ln(words.Chunk(2));      // [["a", "b"], ["c", "d"], ["e"]]
+
+    // Copy
+    var orig = [1, 2, 3];
+    var copy = orig.Copy();
+    copy.Add(4);
+    print_ln(orig);   // [1, 2, 3]  — unaffected
+    print_ln(copy);   // [1, 2, 3, 4]
+
+    // Static: List.Fill, List.Range
+    print_ln(List.Fill(0, 5));     // [0, 0, 0, 0, 0]
+    print_ln(List.Range(1, 5));    // [1, 2, 3, 4, 5]
+    print_ln(List.Range(0, 5));    // [0, 1, 2, 3, 4]
+}
+
+// ── Convert static ─────────────────────────────────────────────────────────────
+func demo_convert() {
+    print_ln("=== Convert ===");
+
+    print_ln(Convert.ToInt("42"));       // 42
+    print_ln(Convert.ToInt(3.7));        // 3
+    print_ln(Convert.ToFloat("2.718"));  // 2.718
+    print_ln(Convert.ToBool(0));         // false
+    print_ln(Convert.ToBool("yes"));     // true
+    print_ln(Convert.ToString(12345));   // "12345"
+
+    // Hex
+    print_ln(Convert.ToHex(255));        // FF
+    print_ln(Convert.FromHex("FF"));     // 255
+    print_ln(Convert.ToBinary(10));      // 1010
+
+    // Bytes
+    var bytes = Convert.ToBytes("Hi");
+    print_ln(bytes);                     // [72, 105]
+    print_ln(Convert.FromBytes(bytes));  // Hi
+
+    // Base64
+    var encoded = Convert.ToBase64("Hello, RayTask!");
+    print_ln(encoded);                   // SGVsbG8sIFJheVRhc2sh
+    print_ln(Convert.FromBase64(encoded)); // Hello, RayTask!
+}
+
+// ── Env static ────────────────────────────────────────────────────────────────
+func demo_env() {
+    print_ln("=== Env ===");
+
+    print_ln(Env.OS);            // windows / linux / macos
+    print_ln(Env.CurrentDir);    // current working directory
+    print_ln(Env.Home);          // home directory
+
+    // Environment variables
+    Env.Set("MY_VAR", "hello_raytask");
+    print_ln(Env.Get("MY_VAR"));   // hello_raytask
+    print_ln(Env.Has("MY_VAR"));   // true
+    print_ln(Env.Has("NOPE123"));  // false
+
+    // Command-line arguments
+    var args = Env.Args;
+    print_ln("Args count: " + args.Count().ToString());
+}

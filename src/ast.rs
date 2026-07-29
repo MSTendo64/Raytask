@@ -305,9 +305,22 @@ pub enum ElseBranch {
 
 #[derive(Debug, Clone)]
 pub struct SwitchCase {
-    pub pattern: Option<Expr>, // None = default
+    /// None = default arm.
+    /// One or more patterns separated by `|`.
+    pub patterns: Vec<SwitchPattern>,
     pub pattern_bind: Option<String>,
+    /// Optional guard: `when <expr>`
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
+}
+
+/// A single pattern inside a `case` arm.
+#[derive(Debug, Clone)]
+pub enum SwitchPattern {
+    /// Literal / expression equality: `case 42:`
+    Expr(Expr),
+    /// Inclusive range: `case 1..10:`
+    Range(Expr, Expr),
 }
 
 #[derive(Debug, Clone)]

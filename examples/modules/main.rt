@@ -1,0 +1,24 @@
+/// Application entry (source B): imports all APIs from `lib.rt` and runs Main.
+///
+/// Run from the repo root:
+///   raytask run examples/modules/main.rt
+
+import bstd.io;
+import lib;
+
+void Main() {
+    LogInfo("modules example starting");
+
+    var g = new Greeter("RayTask");
+    print(g.Hello());
+
+    var c = new Counter(10);
+    print($"counter: {c.Current()}");
+    print($"next: {c.Next()}");
+    print($"next: {c.Next()}");
+
+    print($"Double(21) = {Double(21)}");
+    print($"Add(40, 2) = {Add(40, 2)}");
+
+    LogInfo("done");
+}

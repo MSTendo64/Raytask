@@ -40,6 +40,16 @@ pub fn stringify(args: &[Value]) -> RuntimeResult<Value> {
     Ok(Value::String(s.into()))
 }
 
+/// Serialize a Value to a JSON string (for threads cross-boundary use).
+pub fn stringify_raw(v: &Value) -> String {
+    serde_json::to_string(&to_json(v)).unwrap_or_else(|_| "null".into())
+}
+
+/// Deserialize a serde_json::Value to a RayTask Value.
+pub fn json_to_value(j: serde_json::Value) -> Value {
+    from_json(&j)
+}
+
 fn from_json(j: &JsonValue) -> Value {
     match j {
         JsonValue::Null => Value::Null,

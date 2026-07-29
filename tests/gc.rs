@@ -23,6 +23,7 @@ fn gc_collect_frees_unreachable() {
             gc: true,
             gc_stress: true,
             no_typecheck: false,
+            no_stdlib: false,
         },
     )
     .unwrap();
@@ -44,6 +45,7 @@ fn no_gc_still_runs() {
             gc: false,
             gc_stress: false,
             no_typecheck: false,
+            no_stdlib: false,
         },
     )
     .unwrap();
@@ -73,6 +75,7 @@ fn destructor_does_not_crash_on_collect() {
             gc: true,
             gc_stress: true,
             no_typecheck: false,
+            no_stdlib: false,
         },
     )
     .unwrap();

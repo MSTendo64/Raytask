@@ -1,0 +1,71 @@
+import bstd.io;
+import bstd.fs;
+
+// ── Файловые стримы ────────────────────────────────────────────────────────────
+//
+// Stream.OpenRead(path)    → Stream (чтение)
+// Stream.OpenWrite(path)   → Stream (запись / перезапись)
+//
+// Методы на читающем стриме:
+//   s.Read(n)      → List<int> — прочитать n байт
+//   s.ReadLine()   → string | null — прочитать строку (null = EOF)
+//   s.Seek(pos)    → int — переместить позицию
+//   s.Close()      → закрыть
+//
+// Методы на пишущем стриме:
+//   s.Write(data)     → int — записать List<int> или string
+//   s.WriteLine(str)  → записать строку + \n
+//   s.Flush()         → сбросить буфер
+//   s.Seek(pos)       → переместить позицию
+//   s.Close()         → сброс + закрыть
+
+void WriteDemo() {
+    print("--- Write ---");
+    var ws = Stream.OpenWrite("stream_demo.txt");
+    ws.WriteLine("Hello, RayTask!");
+    ws.WriteLine("Second line");
+    ws.WriteLine("Third line");
+    ws.Close();
+    print("Written 3 lines");
+}
+
+void ReadLinesDemo() {
+    print("--- ReadLine ---");
+    var rs = Stream.OpenRead("stream_demo.txt");
+    var line = rs.ReadLine();
+    while (!IsNull(line)) {
+        print($"  | {line}");
+        line = rs.ReadLine();
+    }
+    rs.Close();
+}
+
+void ReadBytesDemo() {
+    print("--- Read bytes (first 5) ---");
+    var rs = Stream.OpenRead("stream_demo.txt");
+    var bytes = rs.Read(5);
+    for (var i = 0; i < bytes.Count; i++) {
+        print(bytes.Get(i));
+    }
+    rs.Close();
+}
+
+void SeekDemo() {
+    print("--- Seek + ReadLine ---");
+    var rs = Stream.OpenRead("stream_demo.txt");
+    rs.ReadLine();          // пропустить первую строку
+    rs.ReadLine();          // пропустить вторую
+    var third = rs.ReadLine();
+    print($"Third line: {third}");
+    rs.Close();
+}
+
+void Main() {
+    WriteDemo();
+    ReadLinesDemo();
+    ReadBytesDemo();
+    SeekDemo();
+    // Убираем за собой
+    File.Delete("stream_demo.txt");
+    print("Done");
+}

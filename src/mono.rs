@@ -443,9 +443,16 @@ impl Mono {
             Stmt::Switch { expr, cases, .. } => {
                 self.collect_expr(expr);
                 for case in cases {
-                    if let Some(p) = &case.pattern {
-                        self.collect_expr(p);
+                    for pat in &case.patterns {
+                        match pat {
+                            crate::ast::SwitchPattern::Expr(e) => self.collect_expr(e),
+                            crate::ast::SwitchPattern::Range(lo, hi) => {
+                                self.collect_expr(lo);
+                                self.collect_expr(hi);
+                            }
+                        }
                     }
+                    if let Some(g) = &case.guard { self.collect_expr(g); }
                     for s in &case.body {
                         self.collect_stmt(s);
                     }
@@ -777,8 +784,12 @@ impl Mono {
                 cases: cases
                     .into_iter()
                     .map(|c| SwitchCase {
-                        pattern: c.pattern.map(|p| self.rewrite_expr(p)),
+                        patterns: c.patterns.into_iter().map(|p| match p {
+                            crate::ast::SwitchPattern::Expr(e) => crate::ast::SwitchPattern::Expr(self.rewrite_expr(e)),
+                            crate::ast::SwitchPattern::Range(lo, hi) => crate::ast::SwitchPattern::Range(self.rewrite_expr(lo), self.rewrite_expr(hi)),
+                        }).collect(),
                         pattern_bind: c.pattern_bind,
+                        guard: c.guard.map(|g| self.rewrite_expr(g)),
                         body: c
                             .body
                             .into_iter()
@@ -1199,8 +1210,12 @@ fn subst_stmt(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
             cases: cases
                 .iter()
                 .map(|c| SwitchCase {
-                    pattern: c.pattern.as_ref().map(|p| subst_expr(p, map)),
+                    patterns: c.patterns.iter().map(|p| match p {
+                        crate::ast::SwitchPattern::Expr(e) => crate::ast::SwitchPattern::Expr(subst_expr(e, map)),
+                        crate::ast::SwitchPattern::Range(lo, hi) => crate::ast::SwitchPattern::Range(subst_expr(lo, map), subst_expr(hi, map)),
+                    }).collect(),
                     pattern_bind: c.pattern_bind.clone(),
+                    guard: c.guard.as_ref().map(|g| subst_expr(g, map)),
                     body: c.body.iter().map(|s| subst_stmt(s, map)).collect(),
                 })
                 .collect(),

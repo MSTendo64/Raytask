@@ -1,7 +1,7 @@
 //! AST → bytecode compiler.
 
 use crate::ast::*;
-use crate::bytecode::{Chunk, ClassInfo, Module, Op};
+use crate::bytecode::{Chunk, ClassInfo, LocalDebug, Module, Op};
 use crate::error::{CompileError, CompileResult};
 use crate::ffi::{self, FfiEmbed, FfiModuleInfo};
 use crate::span::Span;
@@ -14,6 +14,8 @@ struct Local {
     depth: usize,
     /// `owned` locals call Dispose when leaving scope.
     owned: bool,
+    /// Index into `local_ranges` for this live binding.
+    range_idx: usize,
 }
 
 struct UpvalueDesc {
@@ -25,6 +27,7 @@ struct UpvalueDesc {
 
 struct EnclosingFn {
     locals: Vec<Local>,
+    local_ranges: Vec<LocalDebug>,
     upvalues: Vec<UpvalueDesc>,
 }
 
@@ -38,6 +41,8 @@ pub struct Compiler {
     module: Module,
     current: usize, // current chunk index
     locals: Vec<Local>,
+    /// Debug live ranges accumulated for the current function.
+    local_ranges: Vec<LocalDebug>,
     upvalues: Vec<UpvalueDesc>,
     enclosing: Vec<EnclosingFn>,
     scope_depth: usize,
@@ -51,6 +56,9 @@ pub struct Compiler {
     embed_counter: usize,
     loop_stack: Vec<LoopCtx>,
     errors: Vec<CompileError>,
+    /// Source path stamped onto chunks (set by DAP / callers).
+    source_path: Option<String>,
+    stdlib_enabled: bool,
 }
 
 struct LoopCtx {
@@ -67,12 +75,14 @@ impl Compiler {
             globals: Vec::new(),
             classes: Vec::new(),
             ffi: FfiModuleInfo::default(),
+            stdlib_enabled: true,
         };
         let _ = &mut module;
         Self {
             module,
             current: 0,
             locals: Vec::new(),
+            local_ranges: Vec::new(),
             upvalues: Vec::new(),
             enclosing: Vec::new(),
             scope_depth: 0,
@@ -84,7 +94,20 @@ impl Compiler {
             embed_counter: 0,
             loop_stack: Vec::new(),
             errors: Vec::new(),
+            source_path: None,
+            stdlib_enabled: true,
         }
+    }
+
+    pub fn with_stdlib(mut self, stdlib_enabled: bool) -> Self {
+        self.stdlib_enabled = stdlib_enabled;
+        self.module.stdlib_enabled = stdlib_enabled;
+        self
+    }
+
+    pub fn with_source(mut self, path: impl Into<String>) -> Self {
+        self.source_path = Some(path.into());
+        self
     }
 
     pub fn compile(mut self, program: &Program) -> CompileResult<Module> {
@@ -111,6 +134,14 @@ impl Compiler {
         }
 
         self.chunk().emit_op(Op::Halt, 1);
+
+        if let Some(path) = &self.source_path {
+            for chunk in &mut self.module.chunks {
+                if chunk.source.is_none() {
+                    chunk.source = Some(path.clone());
+                }
+            }
+        }
 
         if let Some(err) = self.errors.first() {
             return Err(CompileError::syntax(err.to_string(), Span::default()));
@@ -311,11 +342,13 @@ impl Compiler {
         for a in attrs {
             let key = a.name.to_ascii_lowercase();
             match key.as_str() {
-                "include" => {
+                "include" | "bind" | "cheader" => {
                     if let Some(s) = ffi::attr_string(a) {
                         if !self.module.ffi.includes.contains(&s) {
                             self.module.ffi.includes.push(s);
                         }
+                        // Prototypes are expanded into AST by ffi_bind (VM, no gcc).
+                        // Path is still recorded for native C codegen `#include`.
                     }
                 }
                 "link" | "dllimport" | "lib" => {
@@ -370,9 +403,7 @@ impl Compiler {
         self.module.chunks[idx].is_async = f.is_async;
         let prev = self.current;
         self.current = idx;
-        self.locals.clear();
-        self.scope_depth = 0;
-        self.max_locals = 0;
+        self.reset_function_locals();
         self.begin_scope();
         for p in &f.params {
             self.add_local(&p.name);
@@ -388,8 +419,8 @@ impl Compiler {
         // Implicit return null
         self.chunk().emit_op(Op::Null, f.span.line);
         self.chunk().emit_op(Op::Return, f.span.line);
-        self.module.chunks[idx].local_count = self.max_locals.max(self.locals.len());
         self.end_scope();
+        self.finish_locals(idx);
         self.current = prev;
 
         // Define global function value in main chunk
@@ -398,11 +429,9 @@ impl Compiler {
         self.current = 0;
         let export_name = all_attrs
             .iter()
-            .find(|a| {
-                matches!(
-                    a.name.to_ascii_lowercase().as_str(),
-                    "export" | "entry" | "symbol" | "name"
-                )
+            .find(|a| match a.name.to_ascii_lowercase().as_str() {
+                "export" | "entry" | "symbol" | "name" => true,
+                _ => false,
             })
             .and_then(ffi::attr_string);
         let _ = export_name; // used by C codegen via attributes on AST
@@ -705,9 +734,7 @@ impl Compiler {
         self.module.chunks[idx].is_async = f.is_async;
         let prev = self.current;
         self.current = idx;
-        self.locals.clear();
-        self.scope_depth = 0;
-        self.max_locals = 0;
+        self.reset_function_locals();
         self.begin_scope();
         if has_this {
             self.add_local("this");
@@ -725,8 +752,8 @@ impl Compiler {
         }
         self.chunk().emit_op(Op::Null, f.span.line);
         self.chunk().emit_op(Op::Return, f.span.line);
-        self.module.chunks[idx].local_count = self.max_locals.max(self.locals.len());
         self.end_scope();
+        self.finish_locals(idx);
         self.current = prev;
         Ok(())
     }
@@ -740,9 +767,7 @@ impl Compiler {
     ) -> CompileResult<()> {
         let prev = self.current;
         self.current = idx;
-        self.locals.clear();
-        self.scope_depth = 0;
-        self.max_locals = 0;
+        self.reset_function_locals();
         self.begin_scope();
         self.add_local("this");
         for p in &ctor.params {
@@ -785,8 +810,8 @@ impl Compiler {
         self.chunk().emit_op(Op::GetLocal, ctor.span.line);
         self.chunk().emit_byte(0, ctor.span.line);
         self.chunk().emit_op(Op::Return, ctor.span.line);
-        self.module.chunks[idx].local_count = self.max_locals.max(self.locals.len());
         self.end_scope();
+        self.finish_locals(idx);
         self.current = prev;
         Ok(())
     }
@@ -805,6 +830,10 @@ impl Compiler {
         {
             let slot = (self.locals.len() - 1) as u8;
             let local = self.locals.pop().expect("local");
+            let end_ip = self.module.chunks[self.current].code.len();
+            if let Some(range) = self.local_ranges.get_mut(local.range_idx) {
+                range.end_ip = end_ip;
+            }
             if local.owned {
                 let line = 1;
                 // obj.Dispose() — same stack shape as method call
@@ -826,12 +855,43 @@ impl Compiler {
     }
 
     fn add_local_ex(&mut self, name: &str, owned: bool) {
+        let slot = self.locals.len() as u8;
+        let start_ip = self.module.chunks[self.current].code.len();
+        let range_idx = self.local_ranges.len();
+        self.local_ranges.push(LocalDebug {
+            name: name.to_string(),
+            slot,
+            start_ip,
+            end_ip: usize::MAX,
+        });
         self.locals.push(Local {
             name: name.to_string(),
             depth: self.scope_depth,
             owned,
+            range_idx,
         });
         self.max_locals = self.max_locals.max(self.locals.len());
+    }
+
+    fn finish_locals(&mut self, chunk_idx: usize) {
+        let end_ip = self.module.chunks[chunk_idx].code.len();
+        for range in &mut self.local_ranges {
+            if range.end_ip == usize::MAX {
+                range.end_ip = end_ip;
+            }
+        }
+        self.module.chunks[chunk_idx].local_count = self.max_locals.max(self.locals.len());
+        self.module.chunks[chunk_idx].local_debug = std::mem::take(&mut self.local_ranges);
+        if let Some(path) = &self.source_path {
+            self.module.chunks[chunk_idx].source = Some(path.clone());
+        }
+    }
+
+    fn reset_function_locals(&mut self) {
+        self.locals.clear();
+        self.local_ranges.clear();
+        self.scope_depth = 0;
+        self.max_locals = 0;
     }
 
     fn resolve_local(&self, name: &str) -> Option<u8> {
@@ -939,6 +999,24 @@ impl Compiler {
                 self.chunk().emit_byte(g, line);
             }
         }
+    }
+
+    fn compile_switch_body(
+        &mut self,
+        body: &[Stmt],
+        end_jumps: &mut Vec<usize>,
+        line: usize,
+    ) -> CompileResult<()> {
+        for s in body {
+            match s {
+                Stmt::Break(_) => {
+                    let j = self.chunk().emit_jump(Op::Jump, line);
+                    end_jumps.push(j);
+                }
+                other => self.compile_stmt(other)?,
+            }
+        }
+        Ok(())
     }
 
     fn compile_block(&mut self, block: &Block) -> CompileResult<()> {
@@ -1223,47 +1301,110 @@ impl Compiler {
             }
             Stmt::Block(b) => self.compile_block(b)?,
             Stmt::Switch { expr, cases, span } => {
+                let ln = span.line as usize;
                 self.compile_expr(expr)?;
-                // Keep switch value on stack — use Dup for each case
-                let mut end_jumps = Vec::new();
+                // Switch value stays on stack top throughout all case tests.
+                let mut end_jumps: Vec<usize> = Vec::new();
                 for case in cases {
-                    if let Some(pat) = &case.pattern {
-                        self.chunk().emit_op(Op::Dup, span.line);
-                        self.compile_expr(pat)?;
-                        self.chunk().emit_op(Op::Eq, span.line);
-                        let next = self.chunk().emit_jump(Op::JumpIfFalse, span.line);
-                        self.chunk().emit_op(Op::Pop, span.line); // pop bool
-                        self.chunk().emit_op(Op::Pop, span.line); // pop switch value
-                        for s in &case.body {
-                            // skip break handling specially
-                            match s {
-                                Stmt::Break(_) => {
-                                    let j = self.chunk().emit_jump(Op::Jump, span.line);
-                                    end_jumps.push(j);
+                    if case.patterns.is_empty() {
+                        // default arm
+                        self.chunk().emit_op(Op::Pop, ln); // pop switch value
+                        self.compile_switch_body(&case.body, &mut end_jumps, ln)?;
+                    } else {
+                        // One or more patterns: OR-them together.
+                        let mut skip_jumps: Vec<usize> = Vec::new();
+                        let mut next_jumps: Vec<usize> = Vec::new();
+
+                        for (i, pat) in case.patterns.iter().enumerate() {
+                            let is_last = i == case.patterns.len() - 1;
+                            match pat {
+                                crate::ast::SwitchPattern::Expr(e) => {
+                                    self.chunk().emit_op(Op::Dup, ln);
+                                    self.compile_expr(e)?;
+                                    self.chunk().emit_op(Op::Eq, ln);
+                                    if is_last {
+                                        let nj = self.chunk().emit_jump(Op::JumpIfFalse, ln);
+                                        next_jumps.push(nj);
+                                        self.chunk().emit_op(Op::Pop, ln);
+                                    } else {
+                                        let sj = self.chunk().emit_jump(Op::JumpIfTrue, ln);
+                                        skip_jumps.push(sj);
+                                        self.chunk().emit_op(Op::Pop, ln);
+                                    }
                                 }
-                                other => self.compile_stmt(other)?,
+                                crate::ast::SwitchPattern::Range(lo, hi) => {
+                                    self.chunk().emit_op(Op::Dup, ln);
+                                    self.compile_expr(lo)?;
+                                    self.chunk().emit_op(Op::Ge, ln);
+                                    self.chunk().emit_op(Op::Dup, ln);
+                                    let fail_lo = self.chunk().emit_jump(Op::JumpIfFalse, ln);
+                                    self.chunk().emit_op(Op::Pop, ln);
+                                    self.chunk().emit_op(Op::Dup, ln);
+                                    self.compile_expr(hi)?;
+                                    self.chunk().emit_op(Op::Le, ln);
+                                    if is_last {
+                                        let nj = self.chunk().emit_jump(Op::JumpIfFalse, ln);
+                                        next_jumps.push(nj);
+                                        self.chunk().emit_op(Op::Pop, ln);
+                                    } else {
+                                        let sj = self.chunk().emit_jump(Op::JumpIfTrue, ln);
+                                        skip_jumps.push(sj);
+                                        self.chunk().emit_op(Op::Pop, ln);
+                                    }
+                                    self.chunk().patch_jump(fail_lo);
+                                    self.chunk().emit_op(Op::Pop, ln);
+                                }
                             }
                         }
-                        let end = self.chunk().emit_jump(Op::Jump, span.line);
-                        end_jumps.push(end);
-                        self.chunk().patch_jump(next);
-                        self.chunk().emit_op(Op::Pop, span.line); // pop false
-                    } else {
-                        // default
-                        self.chunk().emit_op(Op::Pop, span.line); // pop switch value
-                        for s in &case.body {
-                            match s {
-                                Stmt::Break(_) => {
-                                    let j = self.chunk().emit_jump(Op::Jump, span.line);
-                                    end_jumps.push(j);
-                                }
-                                other => self.compile_stmt(other)?,
-                            }
+
+                        // Patch OR-match jumps → reach body
+                        for sj in skip_jumps {
+                            self.chunk().patch_jump(sj);
+                            self.chunk().emit_op(Op::Pop, ln);
+                        }
+
+                        // Optional guard: `when <expr>`
+                        let guard_fail: Option<usize> = if let Some(g) = &case.guard {
+                            self.compile_expr(g)?;
+                            Some(self.chunk().emit_jump(Op::JumpIfFalse, ln))
+                        } else {
+                            None
+                        };
+
+                        // Bind switch value to name if requested
+                        if let Some(bind) = &case.pattern_bind {
+                            self.chunk().emit_op(Op::Dup, ln);
+                            let slot = self.locals.len() as u8;
+                            self.add_local(bind);
+                            self.chunk().emit_op(Op::SetLocal, ln);
+                            self.chunk().emit_byte(slot, ln);
+                            self.chunk().emit_op(Op::Pop, ln);
+                        }
+
+                        // Pop switch value, run body
+                        self.chunk().emit_op(Op::Pop, ln);
+                        self.compile_switch_body(&case.body, &mut end_jumps, ln)?;
+                        let ej = self.chunk().emit_jump(Op::Jump, ln);
+                        end_jumps.push(ej);
+
+                        // Guard fail: pop guard result + switch value, skip to end
+                        if let Some(gf) = guard_fail {
+                            self.chunk().patch_jump(gf);
+                            self.chunk().emit_op(Op::Pop, ln); // pop guard false
+                            self.chunk().emit_op(Op::Pop, ln); // pop switch value
+                            let ej2 = self.chunk().emit_jump(Op::Jump, ln);
+                            end_jumps.push(ej2);
+                        }
+
+                        // Patch next-case jumps
+                        for nj in next_jumps {
+                            self.chunk().patch_jump(nj);
+                            self.chunk().emit_op(Op::Pop, ln); // pop false
                         }
                     }
                 }
-                // if no default matched, pop switch value
-                self.chunk().emit_op(Op::Pop, span.line);
+                // Fall-through: pop switch value
+                self.chunk().emit_op(Op::Pop, ln);
                 for j in end_jumps {
                     self.chunk().patch_jump(j);
                 }
@@ -1718,7 +1859,7 @@ impl Compiler {
                     }
                     self.chunk().emit_op(Op::NewArray, line);
                     self.chunk().emit_byte(count as u8, line);
-                } else if ty.name == "Dictionary" {
+                } else if self.stdlib_enabled && ty.name == "Dictionary" {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_dict(), line);
                     for (name, value) in init {
@@ -1732,7 +1873,7 @@ impl Compiler {
                         self.chunk().emit_op(Op::SetIndex, line);
                         self.chunk().emit_op(Op::Pop, line);
                     }
-                } else if matches!(ty.name.as_str(), "Set" | "Queue" | "Stack") {
+                } else if self.stdlib_enabled && matches!(ty.name.as_str(), "Set" | "Queue" | "Stack") {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_collection(&ty.name), line);
                     for (_, value) in init {
@@ -1752,16 +1893,16 @@ impl Compiler {
                         self.chunk().emit_byte(2, line);
                         self.chunk().emit_op(Op::Pop, line);
                     }
-                } else if ty.name == "StringBuilder" {
+                } else if self.stdlib_enabled && ty.name == "StringBuilder" {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_string_builder(), line);
-                } else if ty.name == "Logger" {
+                } else if self.stdlib_enabled && ty.name == "Logger" {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_logger(), line);
-                } else if ty.name == "TcpClient" {
+                } else if self.stdlib_enabled && ty.name == "TcpClient" {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_tcp_client(), line);
-                } else if ty.name == "UdpSocket" {
+                } else if self.stdlib_enabled && ty.name == "UdpSocket" {
                     self.chunk()
                         .emit_constant(crate::stdlib::new_udp_socket(0), line);
                     if let Some(a) = args.first() {
@@ -1852,6 +1993,7 @@ impl Compiler {
                 self.current = idx;
                 self.enclosing.push(EnclosingFn {
                     locals: std::mem::take(&mut self.locals),
+                    local_ranges: std::mem::take(&mut self.local_ranges),
                     upvalues: std::mem::take(&mut self.upvalues),
                 });
                 let saved_depth = self.scope_depth;
@@ -1871,11 +2013,12 @@ impl Compiler {
                 }
                 self.chunk().emit_op(Op::Null, line);
                 self.chunk().emit_op(Op::Return, line);
-                self.module.chunks[idx].local_count = self.max_locals.max(self.locals.len());
                 self.end_scope();
+                self.finish_locals(idx);
                 let lambda_upvalues = std::mem::take(&mut self.upvalues);
                 let enc = self.enclosing.pop().expect("enclosing lambda frame");
                 self.locals = enc.locals;
+                self.local_ranges = enc.local_ranges;
                 self.upvalues = enc.upvalues;
                 self.scope_depth = saved_depth;
                 self.max_locals = saved_max;

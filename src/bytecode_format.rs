@@ -6,7 +6,7 @@ use crate::value::{FunctionRef, Value};
 use std::rc::Rc;
 
 pub const RTBC_MAGIC: &[u8; 4] = b"RTBC";
-pub const RTBC_VERSION: u16 = 6;
+pub const RTBC_VERSION: u16 = 8;
 
 /// Trailer magic for standalone apps: [...bytecode...][u64 len][APP_MAGIC]
 pub const APP_MAGIC: &[u8; 8] = b"RTBCAP\x01\0";
@@ -16,6 +16,7 @@ pub fn serialize_module(module: &Module) -> Vec<u8> {
     w.bytes(RTBC_MAGIC);
     w.u16(RTBC_VERSION);
     w.u32(module.main_chunk as u32);
+    w.u8(if module.stdlib_enabled { 1 } else { 0 });
 
     w.u32(module.globals.len() as u32);
     for g in &module.globals {
@@ -73,6 +74,24 @@ pub fn serialize_module(module: &Module) -> Vec<u8> {
         for c in &chunk.constants {
             write_value(&mut w, c);
         }
+        w.u32(chunk.local_debug.len() as u32);
+        for ld in &chunk.local_debug {
+            w.str(&ld.name);
+            w.u8(ld.slot);
+            w.u32(ld.start_ip as u32);
+            w.u32(if ld.end_ip == usize::MAX {
+                u32::MAX
+            } else {
+                ld.end_ip as u32
+            });
+        }
+        match &chunk.source {
+            Some(s) => {
+                w.u8(1);
+                w.str(s);
+            }
+            None => w.u8(0),
+        }
     }
 
     // FFI metadata
@@ -111,6 +130,7 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
         });
     }
     let main_chunk = r.u32()? as usize;
+    let stdlib_enabled = if version >= 8 { r.u8()? != 0 } else { true };
 
     let n_globals = r.u32()? as usize;
     let mut globals = Vec::with_capacity(n_globals);
@@ -178,6 +198,30 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
         for _ in 0..n_consts {
             constants.push(read_value(&mut r)?);
         }
+        let n_ld = r.u32()? as usize;
+        let mut local_debug = Vec::with_capacity(n_ld);
+        for _ in 0..n_ld {
+            let ld_name = r.str()?;
+            let slot = r.u8()?;
+            let start_ip = r.u32()? as usize;
+            let end_raw = r.u32()?;
+            let end_ip = if end_raw == u32::MAX {
+                usize::MAX
+            } else {
+                end_raw as usize
+            };
+            local_debug.push(crate::bytecode::LocalDebug {
+                name: ld_name,
+                slot,
+                start_ip,
+                end_ip,
+            });
+        }
+        let source = if r.u8()? == 1 {
+            Some(r.str()?)
+        } else {
+            None
+        };
         chunks.push(Chunk {
             name,
             code,
@@ -186,6 +230,8 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
             arity,
             local_count,
             is_async,
+            local_debug,
+            source,
         });
     }
 
@@ -211,6 +257,7 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
         globals,
         classes,
         ffi,
+        stdlib_enabled,
     })
 }
 

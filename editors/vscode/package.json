@@ -1,0 +1,359 @@
+{
+  "name": "raytask",
+  "displayName": "RayTask",
+  "description": "Language support and debugging for the RayTask programming language",
+  "version": "0.1.2",
+   "publisher": "raytask",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MSTendo64/Raytask.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Snippets",
+    "Linters"
+  ],
+  "keywords": [
+    "raytask",
+    "rt",
+    "debugger"
+  ],
+  "activationEvents": [
+    "onLanguage:raytask",
+    "onDebugResolve:raytask",
+    "workspaceContains:**/project.rtp",
+    "onCommand:raytask.runFile",
+    "onCommand:raytask.checkFile",
+    "onCommand:raytask.initProject",
+    "onCommand:raytask.installPackage"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "raytask",
+        "aliases": [
+          "RayTask",
+          "raytask"
+        ],
+        "extensions": [
+          ".rt"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./media/rt-light.svg",
+          "dark": "./media/rt-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "raytask",
+        "scopeName": "source.raytask",
+        "path": "./syntaxes/raytask.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "raytask",
+        "path": "./snippets/raytask.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "raytask.runFile",
+        "title": "RayTask: Run",
+        "icon": "$(play)"
+      },
+      {
+        "command": "raytask.checkFile",
+        "title": "RayTask: Check File",
+        "icon": "$(check)"
+      },
+      {
+        "command": "raytask.buildFile",
+        "title": "RayTask: Build"
+      },
+      {
+        "command": "raytask.showAst",
+        "title": "RayTask: Show AST"
+      },
+      {
+        "command": "raytask.restartServer",
+        "title": "RayTask: Restart Language Features"
+      },
+      {
+        "command": "raytask.openProjectFile",
+        "title": "RayTask: Open project.rtp",
+        "icon": "$(package)"
+      },
+      {
+        "command": "raytask.initProject",
+        "title": "RayTask: Initialize Project",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "raytask.installPackage",
+        "title": "RayTask: Install Package",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "raytask.updatePackages",
+        "title": "RayTask: Update Packages"
+      },
+      {
+        "command": "raytask.listPackages",
+        "title": "RayTask: List Installed Packages"
+      },
+      {
+        "command": "raytask.searchPackage",
+        "title": "RayTask: Search Packages"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "raytask.runFile",
+          "when": "resourceLangId == raytask",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "raytask.runFile",
+          "when": "resourceLangId == raytask",
+          "group": "raytask@1"
+        },
+        {
+          "command": "raytask.checkFile",
+          "when": "resourceLangId == raytask",
+          "group": "raytask@2"
+        },
+        {
+          "command": "raytask.buildFile",
+          "when": "resourceLangId == raytask",
+          "group": "raytask@3"
+        },
+        {
+          "command": "raytask.openProjectFile",
+          "when": "resourceLangId == raytask",
+          "group": "raytask@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "raytask.initProject",
+          "when": "explorerResourceIsFolder",
+          "group": "raytask@1"
+        },
+        {
+          "command": "raytask.openProjectFile",
+          "when": "resourceFilename == project.rtp",
+          "group": "raytask@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "raytask.openProjectFile",
+          "when": "resourceLangId == raytask"
+        },
+        {
+          "command": "raytask.installPackage"
+        },
+        {
+          "command": "raytask.updatePackages"
+        },
+        {
+          "command": "raytask.listPackages"
+        },
+        {
+          "command": "raytask.searchPackage"
+        },
+        {
+          "command": "raytask.initProject"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "RayTask",
+      "properties": {
+        "raytask.path": {
+          "type": "string",
+          "default": "raytask",
+          "description": "Path to the raytask executable (or leave as 'raytask' if on PATH)."
+        },
+        "raytask.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run typecheck / diagnostics when a .rt file is saved."
+        },
+        "raytask.checkOnChange": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run diagnostics while typing (debounced)."
+        },
+        "raytask.trace.dap": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log Debug Adapter Protocol traffic to the RayTask output channel."
+        },
+        "raytask.preferProjectEntry": {
+          "type": "boolean",
+          "default": true,
+          "description": "When running/building inside a project, use the project entry point (from project.rtp) instead of the currently open file."
+        }
+      }
+    },
+    "inputVariables": [
+      {
+        "id": "packageName",
+        "type": "promptString",
+        "description": "Package name (optionally with version, e.g. HttpClient or HttpClient@1.2.0)"
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "raytask",
+        "owner": "raytask",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(?:error:\\s+)?(\\d+):(\\d+):\\s+(.+)$",
+          "line": 1,
+          "column": 2,
+          "message": 3
+        }
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "raytask",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "run | check | build | test"
+          },
+          "file": {
+            "type": "string"
+          }
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "raytask",
+        "label": "RayTask",
+        "languages": [
+          "raytask"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .rt file to debug",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Arguments passed to the program"
+              },
+              "cwd": {
+                "type": "string",
+                "default": "${workspaceFolder}",
+                "description": "Working directory"
+              },
+              "raytaskPath": {
+                "type": "string",
+                "default": "raytask",
+                "description": "Path to raytask executable"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": true,
+                "description": "Stop on the first executable line"
+              },
+              "noTypecheck": {
+                "type": "boolean",
+                "default": false
+              },
+              "gc": {
+                "type": "boolean",
+                "default": true
+              },
+              "trace": {
+                "type": "boolean",
+                "default": false,
+                "description": "Trace DAP traffic (extension setting raytask.trace.dap)"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "raytask",
+            "request": "launch",
+            "name": "RayTask: Debug current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "RayTask: Debug current file (script)",
+            "description": "Debug a standalone .rt script",
+            "body": {
+              "type": "raytask",
+              "request": "launch",
+              "name": "RayTask: Debug ${1:main.rt}",
+              "program": "^\"\\${file}\"",
+              "cwd": "^\"\\${fileDirname}\"",
+              "stopOnEntry": true
+            }
+          },
+          {
+            "label": "RayTask: Debug project entry",
+            "description": "Debug the project entry point defined in project.rtp",
+            "body": {
+              "type": "raytask",
+              "request": "launch",
+              "name": "RayTask: Debug project",
+              "program": "^\"\\${workspaceFolder}/src/main.rt\"",
+              "cwd": "^\"\\${workspaceFolder}\"",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "raytask"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "echo ready"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -51,6 +51,9 @@ void Main() {
 ```bash
 raytask check main.rt
 raytask build main.rt --no-typecheck
+raytask build main.rt -g                              # → .rtbc + .rtdbg
+raytask symbols main.rt                               # только .rtdbg
+raytask bind mylib.h --lib mylib.dll                  # C-заголовок → FFI (без gcc)
 raytask run main.rt
 raytask build main.rt                              # → .rtbc
 raytask build main.rt --target native              # → .c (+ gcc/clang), async+GC runtime
@@ -64,6 +67,7 @@ raytask build main.rt --target native-bin --platform windows
 raytask build main.rt --target efi
 raytask build main.rt --target raw
 raytask link main.rtbc --platform linux -o app.elf
+raytask dap                                          # Debug Adapter Protocol (stdio)
 raytask install SomeLib
 raytask search http
 raytask publish .
@@ -119,7 +123,19 @@ raytask build examples/hello.rt --target app --platform current
 ```bash
 cargo run -- run examples/hello.rt
 cargo run -- run examples/point.rt
+cargo run -- run examples/modules/main.rt   # модули: lib.rt + main.rt
 cargo run -- test examples/tests.rt
+```
+
+### Модули (`examples/modules/`)
+
+| Файл | Роль |
+|------|------|
+| `lib.rt` | Классы (`Counter`, `Greeter`) и функции (`Double`, `Add`, …) |
+| `main.rt` | `import lib;` и `Main()` использует этот API |
+
+```bash
+raytask run examples/modules/main.rt
 ```
 
 ## Конвейер компилятора
@@ -137,6 +153,31 @@ cargo run -- test examples/tests.rt
 
 AST ──→ CCodegen ──→ .c ──→ gcc/clang / emcc / freestanding ──→ native|wasm|kernel
 ```
+
+## VS Code / Cursor
+
+Поддержка языка и отладка: [`editors/vscode`](../editors/vscode):
+
+- Подсветка, сниппеты, диагностика (`raytask check`), автодополнение
+- Отладчик через `raytask dap` (точки останова, шаг, локальные/глобальные)
+
+```bash
+cargo install --path .
+cd editors/vscode
+npx @vscode/vsce package --no-dependencies -o raytask-0.1.0.vsix
+code --install-extension ./raytask-0.1.0.vsix
+```
+
+При необходимости укажите `raytask.path`. Подробнее: [editors/vscode/README.md](../editors/vscode/README.md).
+
+### Debug-символы (`.rtdbg`)
+
+```bash
+raytask build src/main.rt -g
+raytask symbols src/main.rt -o out.rtdbg
+```
+
+Без `-g` из `.rtbc` убираются имена локалей (меньше размер). Sidecar `.rtdbg` подхватывается DAP при отладке `.rtbc`.
 
 ## Документация
 

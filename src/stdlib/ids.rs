@@ -182,3 +182,146 @@ pub const LOG_DEBUG: usize = 853;
 // ---- Threading ----
 pub const THREAD_RUN: usize = 870;
 pub const THREAD_SLEEP: usize = 871;
+
+// ---- Mutex / Channel ----
+pub const MUTEX_NEW: usize = 880;
+pub const MUTEX_LOCK: usize = 881;
+pub const MUTEX_UNLOCK: usize = 882;
+pub const MUTEX_TRY_LOCK: usize = 883;
+pub const CHANNEL_NEW: usize = 890;
+pub const CHANNEL_SEND: usize = 891;
+pub const CHANNEL_RECV: usize = 892;
+pub const CHANNEL_TRY_RECV: usize = 893;
+pub const CHANNEL_CLOSE: usize = 894;
+
+// ---- Generator / Enumerator ----
+pub const GEN_FROM: usize = 900;
+pub const GEN_RANGE: usize = 901;
+pub const GEN_REPEAT: usize = 902;
+pub const GEN_EMPTY: usize = 903;
+pub const GEN_NEXT: usize = 904;
+pub const GEN_HAS_NEXT: usize = 905;
+pub const GEN_RESET: usize = 906;
+pub const GEN_TO_LIST: usize = 907;
+
+// ---- TimeSpan ----
+pub const TIMESPAN_FROM_MS: usize = 920;
+pub const TIMESPAN_FROM_SECS: usize = 921;
+pub const TIMESPAN_FROM_MINS: usize = 922;
+pub const TIMESPAN_FROM_HOURS: usize = 923;
+pub const TIMESPAN_ADD: usize = 924;
+pub const TIMESPAN_SUB: usize = 925;
+pub const TIMESPAN_TOTAL_MS: usize = 926;
+pub const TIMESPAN_TOTAL_SECS: usize = 927;
+pub const TIMESPAN_TO_STRING: usize = 928;
+
+// ---- DateTime extended ----
+pub const DT_ADD_SPAN: usize = 930;
+pub const DT_SUB_SPAN: usize = 931;
+pub const DT_DIFF: usize = 932;
+pub const DT_FORMAT: usize = 933;
+pub const DT_PARSE: usize = 934;
+pub const DT_YEAR: usize = 935;
+pub const DT_MONTH: usize = 936;
+pub const DT_DAY: usize = 937;
+pub const DT_HOUR: usize = 938;
+pub const DT_MINUTE: usize = 939;
+pub const DT_SECOND: usize = 940;
+
+// ---- File Streams ----
+pub const STREAM_OPEN_READ: usize = 950;
+pub const STREAM_OPEN_WRITE: usize = 951;
+pub const STREAM_READ: usize = 952;
+pub const STREAM_WRITE: usize = 953;
+pub const STREAM_CLOSE: usize = 954;
+pub const STREAM_SEEK: usize = 955;
+pub const STREAM_FLUSH: usize = 956;
+pub const STREAM_READ_LINE: usize = 957;
+pub const STREAM_WRITE_LINE: usize = 958;
+
+// ---- Compression ----
+pub const GZ_COMPRESS: usize = 960;
+pub const GZ_DECOMPRESS: usize = 961;
+pub const GZ_COMPRESS_FILE: usize = 962;
+pub const GZ_DECOMPRESS_FILE: usize = 963;
+pub const ZSTD_COMPRESS: usize = 970;
+pub const ZSTD_DECOMPRESS: usize = 971;
+pub const ZSTD_COMPRESS_FILE: usize = 972;
+pub const ZSTD_DECOMPRESS_FILE: usize = 973;
+
+// ---- Math extended ----
+pub const MATH_CLAMP: usize = 1000;
+pub const MATH_LOG2: usize = 1001;
+pub const MATH_LOG10: usize = 1002;
+pub const MATH_ATAN2: usize = 1003;
+pub const MATH_SIGN: usize = 1004;
+pub const MATH_TRUNCATE: usize = 1005;
+pub const MATH_IS_NAN: usize = 1006;
+pub const MATH_IS_INF: usize = 1007;
+pub const MATH_LERP: usize = 1008;
+pub const MATH_ASIN: usize = 1009;
+pub const MATH_ACOS: usize = 1010;
+pub const MATH_ATAN: usize = 1011;
+pub const MATH_SINH: usize = 1012;
+pub const MATH_COSH: usize = 1013;
+pub const MATH_TANH: usize = 1014;
+pub const MATH_CBRT: usize = 1015;
+pub const MATH_HYPOT: usize = 1016;
+pub const MATH_TAU: usize = 1017;
+
+// ---- String extended ----
+pub const STR_PAD_LEFT: usize = 1050;
+pub const STR_PAD_RIGHT: usize = 1051;
+pub const STR_REPEAT: usize = 1052;
+pub const STR_REVERSE: usize = 1053;
+pub const STR_CHARS: usize = 1054;
+pub const STR_LINES: usize = 1055;
+pub const STR_PARSE_INT: usize = 1056;
+pub const STR_PARSE_FLOAT: usize = 1057;
+pub const STR_IS_EMPTY: usize = 1058;
+pub const STR_IS_WHITESPACE: usize = 1059;
+// STR_JOIN already defined as 212 above
+pub const STR_FORMAT: usize = 1061; // static: String.Format(template, args...)
+pub const STR_COUNT: usize = 1062;
+pub const STR_REMOVE: usize = 1063;
+pub const STR_INSERT: usize = 1064;
+
+// ---- List extended ----
+pub const LIST_SORT: usize = 1100;
+pub const LIST_SORT_DESC: usize = 1101;
+pub const LIST_REVERSE: usize = 1102;
+pub const LIST_DISTINCT: usize = 1103;
+pub const LIST_COUNT: usize = 1104;
+pub const LIST_TAKE: usize = 1105;
+pub const LIST_SKIP: usize = 1106;
+pub const LIST_FLATTEN: usize = 1107;
+pub const LIST_ZIP: usize = 1108;
+pub const LIST_CHUNK: usize = 1109;
+pub const LIST_INDEX_OF: usize = 1110;
+pub const LIST_FIND: usize = 1111;
+pub const LIST_REDUCE: usize = 1112;
+pub const LIST_FILL: usize = 1113;
+pub const LIST_COPY: usize = 1114;
+pub const LIST_RANGE: usize = 1115;
+
+// ---- Convert static ----
+pub const CONV_TO_INT: usize = 1150;
+pub const CONV_TO_FLOAT: usize = 1151;
+pub const CONV_TO_BOOL: usize = 1152;
+pub const CONV_TO_STRING: usize = 1153;
+pub const CONV_TO_HEX: usize = 1154;
+pub const CONV_FROM_HEX: usize = 1155;
+pub const CONV_TO_BYTES: usize = 1156;
+pub const CONV_FROM_BYTES: usize = 1157;
+pub const CONV_TO_BASE64: usize = 1158;
+pub const CONV_FROM_BASE64: usize = 1159;
+pub const CONV_TO_BINARY: usize = 1160;
+
+// ---- Env static ----
+pub const ENV_GET_VAR: usize = 1200;
+pub const ENV_SET_VAR: usize = 1201;
+pub const ENV_HAS_VAR: usize = 1202;
+pub const ENV_ARGS: usize = 1203;
+pub const ENV_CURRENT_DIR: usize = 1204;
+pub const ENV_OS: usize = 1205;
+pub const ENV_HOME: usize = 1206;

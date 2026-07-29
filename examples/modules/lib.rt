@@ -1,0 +1,46 @@
+/// Shared library module (source A): classes and helpers.
+/// Imported by `main.rt` via `import lib;`.
+
+import bstd.io;
+
+export class Counter {
+    int value;
+
+    new(start: int) {
+        this.value = start;
+    }
+
+    int Next() {
+        this.value = this.value + 1;
+        return this.value;
+    }
+
+    int Current() {
+        return this.value;
+    }
+}
+
+export class Greeter {
+    string name;
+
+    new(name: string) {
+        this.name = name;
+    }
+
+    string Hello() {
+        return $"Hello, {this.name}!";
+    }
+}
+
+/// Pure function used by the app entry.
+export int Double(x: int) {
+    return x * 2;
+}
+
+export int Add(a: int, b: int) {
+    return a + b;
+}
+
+export void LogInfo(msg: string) {
+    print($"[lib] {msg}");
+}

@@ -9,7 +9,8 @@ use crate::gc::{GcConfig, GcHeap, GcStats};
 use crate::stdlib;
 use crate::value::{binary_op, FunctionRef, ObjectInstance, UpvalueCell, Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -69,6 +70,27 @@ pub struct Vm {
     sync_depth: usize,
     root_done: Option<Value>,
     heap: GcHeap,
+    /// DAP / debugger session state.
+    debug: Option<VmDebug>,
+}
+
+struct VmDebug {
+    source: PathBuf,
+    /// Normalized path → breakpoint lines (+ optional condition).
+    breakpoints: HashMap<String, Vec<DebugBreakpoint>>,
+    last_line: Option<usize>,
+    last_path: Option<String>,
+    started: bool,
+    /// Frame depth when step began (for over/out).
+    step_depth: usize,
+    pause_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugBreakpoint {
+    pub line: usize,
+    pub condition: Option<String>,
+    pub log_message: Option<String>,
 }
 
 impl Vm {
@@ -77,11 +99,14 @@ impl Vm {
     }
 
     pub fn with_gc(module: Module, gc: GcConfig) -> Self {
-        let n = module.globals.len();
+        let stdlib_enabled = module.stdlib_enabled;
+         let n = module.globals.len();
         let mut globals = vec![Value::Null; n.max(64)];
         for (i, name) in module.globals.iter().enumerate() {
-            if let Some(v) = stdlib::builtin_global(name) {
-                globals[i] = v;
+            if stdlib_enabled {
+                if let Some(v) = stdlib::builtin_global(name) {
+                    globals[i] = v;
+                }
             }
         }
         Self {
@@ -100,6 +125,7 @@ impl Vm {
             sync_depth: 0,
             root_done: None,
             heap: GcHeap::new(gc),
+            debug: None,
         }
     }
 
@@ -539,10 +565,12 @@ impl Vm {
                 let v = self.globals.get(idx).cloned().unwrap_or(Value::Null);
                 if matches!(v, Value::Null) {
                     if let Some(name) = self.module.globals.get(idx) {
-                        if let Some(b) = stdlib::builtin_global(name) {
-                            self.globals[idx] = b.clone();
-                            self.push(b);
-                            return Ok(StepCtrl::Continue);
+                        if self.module.stdlib_enabled {
+                            if let Some(b) = stdlib::builtin_global(name) {
+                                self.globals[idx] = b.clone();
+                                self.push(b);
+                                return Ok(StepCtrl::Continue);
+                            }
                         }
                     }
                 }
@@ -791,7 +819,7 @@ impl Vm {
             }
             x if x == Op::Print as u8 => {
                 let v = self.pop()?;
-                println!("{}", v.as_string());
+                crate::debug_io::write_stdout(&v.as_string());
                 self.push(Value::Null);
             }
             x if x == Op::Halt as u8 => return Ok(StepCtrl::Halt(Value::Null)),
@@ -1353,3 +1381,548 @@ fn set_index(obj: &mut Value, index: &Value, value: Value) -> RuntimeResult<()> 
         _ => Err(RuntimeError::TypeError("value is not indexable".into())),
     }
 }
+
+// ---- Debugger (DAP) support ------------------------------------------------
+
+fn normalize_debug_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        s.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
+impl Vm {
+    /// Prepare VM for debugging without running the event loop yet.
+    pub fn debug_begin(
+        &mut self,
+        source: PathBuf,
+        breakpoints: HashMap<String, Vec<DebugBreakpoint>>,
+        pause_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.heap.install();
+        let main = self.module.main_chunk;
+        let local_count = self.module.chunks[main].local_count.max(8);
+        self.stack.resize(local_count, Value::Null);
+        self.frames.push(CallFrame {
+            chunk: main,
+            ip: 0,
+            slots_start: 0,
+            upvalues: vec![],
+        });
+        self.co_id = 0;
+        self.co_task = None;
+        let path_key = normalize_debug_path(&source);
+        for chunk in &mut self.module.chunks {
+            if chunk.source.is_none() {
+                chunk.source = Some(source.display().to_string());
+            }
+        }
+        self.debug = Some(VmDebug {
+            source,
+            breakpoints,
+            last_line: None,
+            last_path: Some(path_key),
+            started: false,
+            step_depth: 0,
+            pause_flag,
+        });
+    }
+
+    /// Remember the current source line so Continue does not re-stop on it.
+    pub fn debug_mark_current_line(&mut self) {
+        let line = self.debug_current_line();
+        let path = self.debug_current_path();
+        if let Some(d) = &mut self.debug {
+            d.last_line = line;
+            d.last_path = path;
+        }
+    }
+
+    pub fn debug_set_breakpoints(&mut self, breakpoints: HashMap<String, Vec<DebugBreakpoint>>) {
+        if let Some(d) = &mut self.debug {
+            d.breakpoints = breakpoints;
+        }
+    }
+
+    pub fn debug_current_line(&self) -> Option<usize> {
+        let frame = self.frames.last()?;
+        let chunk = self.module.chunks.get(frame.chunk)?;
+        let ip = frame.ip.min(chunk.lines.len().saturating_sub(1));
+        chunk.lines.get(ip).copied().filter(|&l| l > 0)
+    }
+
+    pub fn debug_current_path(&self) -> Option<String> {
+        let frame = self.frames.last()?;
+        let chunk = self.module.chunks.get(frame.chunk)?;
+        chunk
+            .source
+            .as_ref()
+            .map(|s| normalize_debug_path(std::path::Path::new(s)))
+            .or_else(|| {
+                self.debug
+                    .as_ref()
+                    .map(|d| normalize_debug_path(&d.source))
+            })
+    }
+
+    pub fn debug_frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    fn debug_bp_hit(&self, path: &str, line: usize) -> Option<&DebugBreakpoint> {
+        let dbg = self.debug.as_ref()?;
+        let list = dbg.breakpoints.get(path).or_else(|| {
+            // Fall back: match by file name only
+            let file = std::path::Path::new(path)
+                .file_name()
+                .and_then(|s| s.to_str())?;
+            dbg.breakpoints.iter().find_map(|(k, v)| {
+                let kn = std::path::Path::new(k)
+                    .file_name()
+                    .and_then(|s| s.to_str())?;
+                if kn.eq_ignore_ascii_case(file) {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+        })?;
+        list.iter().find(|b| b.line == line)
+    }
+
+    fn debug_condition_ok(&self, cond: &Option<String>) -> bool {
+        match cond {
+            None => true,
+            Some(c) if c.trim().is_empty() => true,
+            Some(c) => self.debug_eval_value(c.trim()).is_truthy(),
+        }
+    }
+
+    /// Run until breakpoint, step boundary, pause, termination, or error.
+    pub fn debug_run(
+        &mut self,
+        mode: crate::dap::VmStepMode,
+    ) -> RuntimeResult<crate::dap::DebugStop> {
+        use crate::dap::{DebugStop, VmStepMode};
+        use std::sync::atomic::Ordering;
+
+        let start_line = self.debug_current_line();
+        let start_path = self.debug_current_path();
+        let start_depth = self.frames.len();
+        if let Some(d) = &mut self.debug {
+            d.started = true;
+            d.step_depth = start_depth;
+            d.pause_flag.store(false, Ordering::SeqCst);
+            if matches!(
+                mode,
+                VmStepMode::Next | VmStepMode::StepIn | VmStepMode::StepOut
+            ) {
+                d.last_line = start_line;
+                d.last_path = start_path.clone();
+            }
+        }
+
+        let mut ops = 0u32;
+        loop {
+            ops += 1;
+            if ops % 64 == 0 {
+                if let Some(d) = &self.debug {
+                    if d.pause_flag.load(Ordering::SeqCst) {
+                        let line = self.debug_current_line().unwrap_or(0);
+                        return Ok(DebugStop::Pause { line });
+                    }
+                }
+            }
+
+            self.fire_timers();
+            self.poll_joins();
+
+            if self.frames.is_empty() {
+                match self.resume_next() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Some(deadline) = self.timers.next_deadline() {
+                            let now = Instant::now();
+                            if deadline > now {
+                                std::thread::sleep(
+                                    (deadline - now).min(Duration::from_millis(50)),
+                                );
+                            }
+                            continue;
+                        }
+                        let v = self.root_done.clone().unwrap_or(Value::Null);
+                        GcHeap::uninstall();
+                        return Ok(DebugStop::Terminated { result: v });
+                    }
+                    Err(e) => return Ok(DebugStop::Error(e)),
+                }
+                continue;
+            }
+
+            let line_before = self.debug_current_line();
+            let path_before = self.debug_current_path();
+            let depth = self.frames.len();
+
+            if let (Some(line), Some(path)) = (line_before, path_before.clone()) {
+                let bp_info = self.debug_bp_hit(&path, line).map(|b| {
+                    (
+                        b.condition.clone(),
+                        b.log_message.clone(),
+                    )
+                });
+                if let Some((cond, log_message)) = bp_info {
+                    let same = self.debug.as_ref().map(|d| {
+                        d.last_line == Some(line) && d.last_path.as_deref() == Some(path.as_str())
+                    });
+                    if same != Some(true) && self.debug_condition_ok(&cond) {
+                        if let Some(msg) = log_message {
+                            let text = self.debug_expand_logpoint(&msg);
+                            crate::debug_io::write_stdout(&text);
+                        } else {
+                            if let Some(d) = &mut self.debug {
+                                d.last_line = Some(line);
+                                d.last_path = Some(path.clone());
+                            }
+                            return Ok(DebugStop::Breakpoint { line });
+                        }
+                    }
+                }
+
+                let step_stop = match mode {
+                    VmStepMode::Next => {
+                        depth <= start_depth
+                            && (Some(line) != start_line || path_before != start_path)
+                    }
+                    VmStepMode::StepIn => {
+                        Some(line) != start_line || path_before != start_path || depth > start_depth
+                    }
+                    VmStepMode::StepOut => depth < start_depth,
+                    VmStepMode::Continue | VmStepMode::Pause => false,
+                };
+                if step_stop {
+                    if let Some(d) = &mut self.debug {
+                        d.last_line = Some(line);
+                        d.last_path = Some(path);
+                    }
+                    return Ok(DebugStop::Step { line });
+                }
+            }
+
+            let chunk_idx = self.frame().chunk;
+            let ip = self.frame().ip;
+            if ip >= self.module.chunks[chunk_idx].code.len() {
+                let frame = self.frames.pop().expect("frame");
+                self.stack.truncate(frame.slots_start);
+                if self.frames.is_empty() {
+                    match self.finish_coroutine(Value::Null) {
+                        Ok(StepCtrl::Halt(v)) => {
+                            GcHeap::uninstall();
+                            return Ok(DebugStop::Terminated { result: v });
+                        }
+                        Ok(_) => continue,
+                        Err(e) => return Ok(DebugStop::Error(e)),
+                    }
+                }
+                self.push(Value::Null);
+                continue;
+            }
+
+            let op = self.module.chunks[chunk_idx].code[ip];
+            self.frame_mut().ip += 1;
+            if let Some(d) = &mut self.debug {
+                d.last_line = line_before;
+                d.last_path = path_before.clone();
+            }
+
+            match self.step(op) {
+                Ok(StepCtrl::Continue) => continue,
+                Ok(StepCtrl::Halt(v)) => {
+                    GcHeap::uninstall();
+                    return Ok(DebugStop::Terminated { result: v });
+                }
+                Ok(StepCtrl::Yield) => continue,
+                Err(e) => return Ok(DebugStop::Error(e)),
+            }
+        }
+    }
+
+    fn debug_expand_logpoint(&self, template: &str) -> String {
+        // Replace {name} with evaluated names
+        let mut out = String::new();
+        let mut rest = template;
+        while let Some(start) = rest.find('{') {
+            out.push_str(&rest[..start]);
+            rest = &rest[start + 1..];
+            if let Some(end) = rest.find('}') {
+                let name = &rest[..end];
+                out.push_str(&self.debug_eval_name(name));
+                rest = &rest[end + 1..];
+            } else {
+                out.push('{');
+                break;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    pub fn debug_stack_frames(&self) -> Vec<serde_json::Value> {
+        let fallback = self
+            .debug
+            .as_ref()
+            .map(|d| d.source.display().to_string())
+            .unwrap_or_default();
+        self.frames
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(i, frame)| {
+                let chunk = self.module.chunks.get(frame.chunk);
+                let name = chunk
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| "<chunk>".into());
+                let line = chunk
+                    .and_then(|c| c.lines.get(frame.ip.min(c.lines.len().saturating_sub(1))))
+                    .copied()
+                    .filter(|&l| l > 0)
+                    .unwrap_or(1);
+                let source_path = chunk
+                    .and_then(|c| c.source.clone())
+                    .unwrap_or_else(|| fallback.clone());
+                let source_name = std::path::Path::new(&source_path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("main.rt");
+                serde_json::json!({
+                    "id": i,
+                    "name": name,
+                    "line": line,
+                    "column": 1,
+                    "source": {
+                        "name": source_name,
+                        "path": source_path
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn frame_by_dap_id(&self, frame_id: usize) -> Option<&CallFrame> {
+        // DAP ids are reverse-enumerated
+        let n = self.frames.len();
+        if frame_id >= n {
+            return None;
+        }
+        self.frames.get(n - 1 - frame_id)
+    }
+
+    pub fn debug_locals_for_frame(&self, frame_id: usize) -> Vec<serde_json::Value> {
+        let Some(frame) = self.frame_by_dap_id(frame_id) else {
+            return vec![];
+        };
+        let chunk = match self.module.chunks.get(frame.chunk) {
+            Some(c) => c,
+            None => return vec![],
+        };
+        let ip = frame.ip;
+        let start = frame.slots_start;
+        let mut seen = HashSet::new();
+        let mut vars = Vec::new();
+
+        for ld in &chunk.local_debug {
+            if ip >= ld.start_ip && ip < ld.end_ip {
+                if !seen.insert(ld.name.clone()) {
+                    continue; // shadowing: keep innermost (ranges listed chronologically; last wins — reverse)
+                }
+                let idx = start + ld.slot as usize;
+                let v = self.stack.get(idx).cloned().unwrap_or(Value::Null);
+                vars.push(self.debug_value_json(&ld.name, &v, 1000 + ld.slot as i64));
+            }
+        }
+        // Prefer innermost shadows: rebuild keeping last occurrence of each name
+        let mut by_name: HashMap<String, serde_json::Value> = HashMap::new();
+        for v in vars {
+            if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
+                by_name.insert(n.to_string(), v);
+            }
+        }
+        let mut out: Vec<_> = by_name.into_values().collect();
+        out.sort_by(|a, b| {
+            a.get("name")
+                .and_then(|x| x.as_str())
+                .cmp(&b.get("name").and_then(|x| x.as_str()))
+        });
+        if out.is_empty() {
+            // Fallback unnamed slots
+            for i in 0..chunk.local_count.max(8) {
+                let idx = start + i;
+                if idx >= self.stack.len() {
+                    break;
+                }
+                let v = &self.stack[idx];
+                out.push(self.debug_value_json(&format!("local_{}", i), v, 1000 + i as i64));
+            }
+        }
+        out
+    }
+
+    pub fn debug_locals(&self) -> Vec<serde_json::Value> {
+        self.debug_locals_for_frame(0)
+    }
+
+    pub fn debug_globals(&self) -> Vec<serde_json::Value> {
+        self.module
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let v = self.globals.get(i).cloned().unwrap_or(Value::Null);
+                self.debug_value_json(name, &v, 2000 + i as i64)
+            })
+            .collect()
+    }
+
+    fn debug_value_json(&self, name: &str, v: &Value, child_base: i64) -> serde_json::Value {
+        let expandable = matches!(v, Value::Array(_) | Value::Dict(_) | Value::Object(_));
+        serde_json::json!({
+            "name": name,
+            "value": v.as_string(),
+            "type": v.type_name(),
+            "variablesReference": if expandable { child_base } else { 0 }
+        })
+    }
+
+    /// Expand variablesReference from locals (1xxx) / globals (2xxx).
+    pub fn debug_expand_var(&self, variables_ref: i64) -> Vec<serde_json::Value> {
+        if (1000..2000).contains(&variables_ref) {
+            let slot = (variables_ref - 1000) as usize;
+            let Some(frame) = self.frames.last() else {
+                return vec![];
+            };
+            let idx = frame.slots_start + slot;
+            let Some(v) = self.stack.get(idx) else {
+                return vec![];
+            };
+            return self.debug_children(v);
+        }
+        if (2000..3000_i64).contains(&variables_ref) {
+            let gi = (variables_ref - 2000) as usize;
+            let Some(v) = self.globals.get(gi) else {
+                return vec![];
+            };
+            return self.debug_children(v);
+        }
+        return vec![];
+    }
+
+    fn debug_children(&self, v: &Value) -> Vec<serde_json::Value> {
+        match v {
+            Value::Array(a) => a
+                .borrow()
+                .iter()
+                .enumerate()
+                .map(|(i, el)| {
+                    serde_json::json!({
+                        "name": format!("[{}]", i),
+                        "value": el.as_string(),
+                        "type": el.type_name(),
+                        "variablesReference": 0
+                    })
+                })
+                .collect(),
+            Value::Dict(d) => d
+                .borrow()
+                .iter()
+                .map(|(k, el)| {
+                    serde_json::json!({
+                        "name": k,
+                        "value": el.as_string(),
+                        "type": el.type_name(),
+                        "variablesReference": 0
+                    })
+                })
+                .collect(),
+            Value::Object(o) => {
+                let obj = o.borrow();
+                let mut kids = vec![serde_json::json!({
+                    "name": "__class",
+                    "value": obj.class_name,
+                    "type": "string",
+                    "variablesReference": 0
+                })];
+                let mut fields: Vec<_> = obj.fields.iter().collect();
+                fields.sort_by(|a, b| a.0.cmp(b.0));
+                for (k, el) in fields {
+                    kids.push(serde_json::json!({
+                        "name": k,
+                        "value": el.as_string(),
+                        "type": el.type_name(),
+                        "variablesReference": 0
+                    }));
+                }
+                kids
+            }
+            _ => vec![],
+        }
+    }
+
+    pub fn debug_eval_value(&self, name: &str) -> Value {
+        if let Some(idx) = self.module.globals.iter().position(|g| g == name) {
+            return self.globals.get(idx).cloned().unwrap_or(Value::Null);
+        }
+        if let Some(frame) = self.frames.last() {
+            if let Some(rest) = name.strip_prefix("local_") {
+                if let Ok(i) = rest.parse::<usize>() {
+                    let idx = frame.slots_start + i;
+                    if idx < self.stack.len() {
+                        return self.stack[idx].clone();
+                    }
+                }
+            }
+            if let Some(chunk) = self.module.chunks.get(frame.chunk) {
+                let ip = frame.ip;
+                for ld in chunk.local_debug.iter().rev() {
+                    if ld.name == name && ip >= ld.start_ip && ip < ld.end_ip {
+                        let idx = frame.slots_start + ld.slot as usize;
+                        if idx < self.stack.len() {
+                            return self.stack[idx].clone();
+                        }
+                    }
+                }
+            }
+        }
+        Value::Null
+    }
+
+    pub fn debug_eval_name(&self, name: &str) -> String {
+        let v = self.debug_eval_value(name);
+        if matches!(v, Value::Null) && !self.module.globals.iter().any(|g| g == name) {
+            // distinguish unknown
+            let known_local = self.frames.last().and_then(|frame| {
+                self.module.chunks.get(frame.chunk).map(|c| {
+                    c.local_debug.iter().any(|ld| {
+                        ld.name == name && frame.ip >= ld.start_ip && frame.ip < ld.end_ip
+                    })
+                })
+            });
+            if known_local != Some(true) && name.strip_prefix("local_").is_none() {
+                return format!("<unknown {}>", name);
+            }
+        }
+        v.as_string()
+    }
+
+    pub fn debug_request_pause(&self) {
+        if let Some(d) = &self.debug {
+            d.pause_flag
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+

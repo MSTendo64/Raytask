@@ -1,0 +1,134 @@
+import bstd.io;
+import bstd.time;
+import bstd.fs;
+
+// ── Сводный пример: потоки, каналы, генераторы, даты, стримы, сжатие ──────────
+
+// 1. Generator — подсчёт суммы чётных чисел из диапазона
+void GenSumDemo() {
+    print("=== Generator ===");
+    var gen = Generator.Range(1, 101);   // 1..100
+    var sumEven = 0;
+    while (gen.HasNext()) {
+        var v = gen.Next();
+        if (v % 2 == 0) { sumEven = sumEven + v; }
+    }
+    print($"Sum of evens 1..100 = {sumEven}");   // 2550
+
+    // Фибоначчи через FromList
+    var fibs = new List<int> {};
+    var a = 0; var b = 1;
+    for (var i = 0; i < 10; i++) {
+        fibs.Add(a);
+        var tmp = a + b; a = b; b = tmp;
+    }
+    var fibGen = Generator.From(fibs);
+    print("Fibonacci:");
+    while (fibGen.HasNext()) { print(fibGen.Next()); }
+}
+
+// 2. DateTime / TimeSpan
+void DateDemo() {
+    print("=== DateTime / TimeSpan ===");
+    var now  = DateTime.Now;
+    var past = DateTime.Parse("2020-01-01T00:00:00");
+    var diff = now.Diff(past);
+    print($"Days since 2020-01-01: {diff.Days}");
+
+    var deadline = now.Add(TimeSpan.FromHours(48));
+    print($"Deadline: {deadline.Format("yyyy-MM-dd HH:mm")}");
+
+    var elapsed = TimeSpan.FromMinutes(90);
+    print($"90 minutes = {elapsed.TotalSeconds} seconds");
+    print($"Span: {elapsed.ToString()}");
+}
+
+// 3. Stream: запись и чтение построчно
+void StreamDemo() {
+    print("=== File Streams ===");
+    var ws = Stream.OpenWrite("all_demo.tmp");
+    for (var i = 1; i <= 5; i++) {
+        ws.WriteLine($"line {i}");
+    }
+    ws.Close();
+
+    var rs = Stream.OpenRead("all_demo.tmp");
+    var ln = rs.ReadLine();
+    var count = 0;
+    while (!IsNull(ln)) {
+        count = count + 1;
+        ln = rs.ReadLine();
+    }
+    rs.Close();
+    print($"Read {count} lines");
+    File.Delete("all_demo.tmp");
+}
+
+// 4. Сжатие: gz round-trip
+void CompressDemo() {
+    print("=== Compression ===");
+    var text = "RayTask! ".Repeat(50);
+    File.WriteText("cmp.txt", text);
+    Compress.GzCompressFile("cmp.txt", "cmp.txt.gz");
+    Compress.GzDecompressFile("cmp.txt.gz", "cmp2.txt");
+    var ok = File.ReadText("cmp2.txt") == text;
+    print($"gz round-trip OK: {ok}");
+    File.Delete("cmp.txt");
+    File.Delete("cmp.txt.gz");
+    File.Delete("cmp2.txt");
+}
+
+// 5. Mutex: безопасный счётчик из двух потоков
+void MutexDemo() {
+    print("=== Thread + Mutex ===");
+    var mx = Mutex.New();
+    mx.Unlock(0);
+
+    var t1 = Thread.Run(() => {
+        for (var i = 0; i < 100; i++) {
+            var cur = mx.Lock();
+            mx.Unlock(cur + 1);
+        }
+    });
+    var t2 = Thread.Run(() => {
+        for (var i = 0; i < 100; i++) {
+            var cur = mx.Lock();
+            mx.Unlock(cur + 1);
+        }
+    });
+    t1.Wait();
+    t2.Wait();
+    print($"Counter = {mx.Lock()}");   // 200
+}
+
+// 6. Channel: pipeline поток → главный
+void ChannelDemo() {
+    print("=== Channel Pipeline ===");
+    var ch = Channel.New();
+    var producer = Thread.Run(() => {
+        var g = Generator.Range(1, 6);
+        while (g.HasNext()) {
+            ch.Send(g.Next());
+        }
+        ch.Close();
+    });
+
+    var results = new List<int> {};
+    while (true) {
+        var v = ch.Recv();
+        if (IsNull(v)) { break; }
+        results.Add(v * v);
+    }
+    producer.Wait();
+    print($"Squares: {results}");   // [1, 4, 9, 16, 25]
+}
+
+void Main() {
+    GenSumDemo();
+    DateDemo();
+    StreamDemo();
+    CompressDemo();
+    MutexDemo();
+    ChannelDemo();
+    print("=== All done ===");
+}

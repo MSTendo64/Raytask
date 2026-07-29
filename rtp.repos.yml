@@ -1,0 +1,26 @@
+# RayTask repository configuration — rtp.repos.yml
+# Place in your project root OR in ~/.raytask/rtp.repos.yml for global settings.
+#
+# Packages are installed to the `external/` folder next to this file.
+# Import them with:  import "external/LibName/src/lib"
+
+repositories:
+  # Official RayTask community registry (highest priority)
+  - name: official
+    url: https://registry.raytask.dev
+    priority: 100
+    secure: true          # reject non-HTTPS sources
+
+  # Example company-internal registry (medium priority)
+  # - name: company
+  #   url: https://packages.example.internal/raytask
+  #   priority: 50
+  #   token: ${RAYTASK_TOKEN}   # env-var substitution not yet supported; put value directly
+
+  # Example local directory registry (lowest priority)
+  # - name: local
+  #   url: file:///C:/dev/raytask-packages/registry
+  #   priority: 10
+
+# Override default install directory (default: external/)
+# install_dir: libs

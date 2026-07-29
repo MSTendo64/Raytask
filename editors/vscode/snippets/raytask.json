@@ -1,0 +1,124 @@
+{
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "import bstd.io;",
+      "",
+      "void Main() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "RayTask entry point"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "export class ${1:Name} {",
+      "\t${2:int} ${3:field};",
+      "",
+      "\tnew(${3:field}: ${2:int}) {",
+      "\t\tthis.${3:field} = ${3:field};",
+      "\t}",
+      "",
+      "\t${4:void} ${5:Method}() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "export class"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:int} ${3:field};",
+      "",
+      "\tnew(${3:field}: ${2:int}) {",
+      "\t\tthis.${3:field} = ${3:field};",
+      "\t}",
+      "}"
+    ]
+  },
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "${1:void} ${2:Name}(${3:args}) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Async function": {
+    "prefix": "async",
+    "body": [
+      "async ${1:void} ${2:Name}() {",
+      "\tawait Task.Delay(${3:100});",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Test": {
+    "prefix": "test",
+    "body": [
+      "[test]",
+      "void Test${1:Name}() {",
+      "\tassert(${2:true});",
+      "\t$0",
+      "}"
+    ]
+  },
+  "For": {
+    "prefix": "for",
+    "body": [
+      "for (var ${1:i} = 0; ${1:i} < ${2:n}; ${1:i}++) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Foreach": {
+    "prefix": "foreach",
+    "body": [
+      "foreach (var ${1:item} in ${2:list}) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if (${1:cond}) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Match Result": {
+    "prefix": "match",
+    "body": [
+      "match (${1:result}) {",
+      "\tOk(v) => { $0 },",
+      "\tError(e) => { print(e); }",
+      "}"
+    ]
+  },
+  "Print": {
+    "prefix": "print",
+    "body": "print(${\"${1:msg}\"});",
+    "description": "print / interpolated print"
+  },
+  "Import io": {
+    "prefix": "impio",
+    "body": "import bstd.io;"
+  },
+  "Import collections": {
+    "prefix": "impcol",
+    "body": "import bstd.collections;"
+  },
+  "Property": {
+    "prefix": "prop",
+    "body": [
+      "property ${1:Name}: ${2:int} {",
+      "\tget { return this.${3:field}; }",
+      "\tset { this.${3:field} = value; }",
+      "}"
+    ]
+  }
+}

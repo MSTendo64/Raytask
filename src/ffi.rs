@@ -160,6 +160,8 @@ pub fn is_ffi_attr(name: &str) -> bool {
             | "symbol"
             | "entry"
             | "name"
+            | "bind"
+            | "cheader"
     )
 }
 
@@ -219,6 +221,18 @@ pub fn ffi_from_function(
     })
 }
 
+fn search_dirs() -> &'static Mutex<Vec<PathBuf>> {
+    static DIRS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    DIRS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Extra directories to search for shared libraries (entry file dir, etc.).
+pub fn set_library_search_paths(paths: &[PathBuf]) {
+    if let Ok(mut g) = search_dirs().lock() {
+        *g = paths.to_vec();
+    }
+}
+
 pub fn resolve_library_path(name: &str) -> PathBuf {
     if let Ok(map) = embed_libs().lock() {
         if let Some(p) = map.get(name) {
@@ -230,7 +244,38 @@ pub fn resolve_library_path(name: &str) -> PathBuf {
             }
         }
     }
-    PathBuf::from(name)
+    let direct = PathBuf::from(name);
+    if direct.is_file() {
+        return direct;
+    }
+    if let Ok(dirs) = search_dirs().lock() {
+        for dir in dirs.iter() {
+            let c = dir.join(name);
+            if c.is_file() {
+                return c;
+            }
+            // bare name → libname.so / name.dll
+            #[cfg(windows)]
+            {
+                let dll = dir.join(format!("{name}.dll"));
+                if dll.is_file() {
+                    return dll;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let so = dir.join(format!("lib{name}.so"));
+                if so.is_file() {
+                    return so;
+                }
+                let dylib = dir.join(format!("lib{name}.dylib"));
+                if dylib.is_file() {
+                    return dylib;
+                }
+            }
+        }
+    }
+    direct
 }
 
 fn load_library(name: &str) -> RuntimeResult<()> {
@@ -339,19 +384,40 @@ fn compile_shared(c_path: &Path, lib_path: &Path) -> RuntimeResult<bool> {
 }
 
 pub fn prepare_module_ffi(info: &FfiModuleInfo, base_dir: Option<&Path>) -> RuntimeResult<()> {
+    let mut dirs = Vec::new();
+    if let Some(d) = base_dir {
+        dirs.push(d.to_path_buf());
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd);
+    }
+    set_library_search_paths(&dirs);
+
     for embed in &info.embeds {
         let _ = compile_embed(embed, base_dir)?;
     }
     for link in &info.links {
         let path = Path::new(link);
-        if path.extension().and_then(|e| e.to_str()) == Some("c") {
-            let stem = path
+        let resolved = if path.is_file() {
+            path.to_path_buf()
+        } else if let Some(d) = base_dir {
+            let c = d.join(link);
+            if c.is_file() {
+                c
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            path.to_path_buf()
+        };
+        if resolved.extension().and_then(|e| e.to_str()) == Some("c") {
+            let stem = resolved
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("ffi_link")
                 .to_string();
-            let source = std::fs::read_to_string(path).map_err(|e| {
-                RuntimeError::Message(format!("cannot read '{}': {}", link, e))
+            let source = std::fs::read_to_string(&resolved).map_err(|e| {
+                RuntimeError::Message(format!("cannot read '{}': {}", resolved.display(), e))
             })?;
             let embed = FfiEmbed {
                 source,

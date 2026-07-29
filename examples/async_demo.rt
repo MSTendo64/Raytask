@@ -1,6 +1,7 @@
 // Async/await event-loop demo
 
 async int Fetch() {
+    dyn
     await Task.Delay(20);
     return 42;
 }

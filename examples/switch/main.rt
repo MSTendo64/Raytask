@@ -1,0 +1,139 @@
+// switch-case examples in RayTask
+// Demonstrates: basic, multi-pattern, range, guard, binding
+
+func main() {
+    demo_basic();
+    demo_multi_pattern();
+    demo_range();
+    demo_guard();
+    demo_string();
+    demo_expression();
+}
+
+// ── Basic switch ───────────────────────────────────────────────────────────────
+func demo_basic() {
+    print_ln("=== Basic switch ===");
+    var day = 3;
+    switch (day) {
+        case 1:
+            print_ln("Monday");
+            break;
+        case 2:
+            print_ln("Tuesday");
+            break;
+        case 3:
+            print_ln("Wednesday");  // prints this
+            break;
+        case 6:
+        case 7:
+            print_ln("Weekend");
+            break;
+        default:
+            print_ln("Another day");
+    }
+}
+
+// ── Multi-pattern (case A | B | C:) ───────────────────────────────────────────
+func demo_multi_pattern() {
+    print_ln("=== Multi-pattern ===");
+    var code = 404;
+    switch (code) {
+        case 200 | 201 | 204:
+            print_ln("Success");
+            break;
+        case 301 | 302:
+            print_ln("Redirect");
+            break;
+        case 400 | 401 | 403 | 404:
+            print_ln("Client error");  // prints this
+            break;
+        case 500 | 503:
+            print_ln("Server error");
+            break;
+        default:
+            print_ln("Unknown code");
+    }
+}
+
+// ── Range pattern (case lo..hi:) ──────────────────────────────────────────────
+func demo_range() {
+    print_ln("=== Range patterns ===");
+    var score = 85;
+    switch (score) {
+        case 90..100:
+            print_ln("Grade: A");
+            break;
+        case 80..89:
+            print_ln("Grade: B");  // prints this
+            break;
+        case 70..79:
+            print_ln("Grade: C");
+            break;
+        case 60..69:
+            print_ln("Grade: D");
+            break;
+        default:
+            print_ln("Grade: F");
+    }
+}
+
+// ── Guard expression (case X when condition:) ────────────────────────────────
+func demo_guard() {
+    print_ln("=== Guard (when) ===");
+    var x = 15;
+    switch (x) {
+        case 15 when x % 3 == 0 && x % 5 == 0:
+            print_ln("FizzBuzz");  // prints this
+            break;
+        case 3 when x % 3 == 0:
+            print_ln("Fizz");
+            break;
+        case 5 when x % 5 == 0:
+            print_ln("Buzz");
+            break;
+        default:
+            print_ln(x.ToString());
+    }
+}
+
+// ── String switch ─────────────────────────────────────────────────────────────
+func demo_string() {
+    print_ln("=== String switch ===");
+    var lang = "rt";
+    switch (lang) {
+        case "rs" | "rust":
+            print_ln("Rust");
+            break;
+        case "py" | "python":
+            print_ln("Python");
+            break;
+        case "rt" | "raytask":
+            print_ln("RayTask");  // prints this
+            break;
+        default:
+            print_ln("Unknown language");
+    }
+}
+
+// ── Switch as expression value (via helper func) ──────────────────────────────
+string grade_label(score: int) {
+    var label = "?";
+    switch (score) {
+        case 90..100: label = "Excellent"; break;
+        case 70..89:  label = "Good"; break;
+        case 50..69:  label = "Pass"; break;
+        default:      label = "Fail";
+    }
+    return label;
+}
+
+func demo_expression() {
+    print_ln("=== Switch as expression ===");
+    var scores = [95, 82, 61, 40];
+    // Using a List of scores
+    // Note: array indexing works with [i]
+    print_ln(grade_label(95));  // Excellent
+    print_ln(grade_label(77));  // Good
+    print_ln(grade_label(55));  // Pass
+    print_ln(grade_label(30));  // Fail
+}

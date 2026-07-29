@@ -132,6 +132,8 @@ pub enum TokenKind {
     QuestionQuestion, // ??
     QuestionQuestionEq, // ??=
     QuestionDot, // ?.
+    DotDot,      // ..
+    DotDotEq,    // ..=
     Dot,
     Comma,
     Colon,

@@ -1,0 +1,20 @@
+/// Bind a C header to a prebuilt shared library — no gcc/clang.
+///
+/// RayTask parses `win_time.h` and creates FFI imports automatically.
+///
+///   raytask run examples/ffi_header/main.rt
+
+import bstd.io;
+
+[DllImport: "kernel32.dll"]
+[bind: "win_time.h"]
+
+void Main() {
+    var ticks = GetTickCount();
+    var pid = GetCurrentProcessId();
+    print($"GetTickCount() = {ticks}");
+    print($"GetCurrentProcessId() = {pid}");
+    assert(ticks > 0);
+    assert(pid > 0);
+    print("ffi header bind ok");
+}

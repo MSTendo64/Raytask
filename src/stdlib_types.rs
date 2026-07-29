@@ -159,6 +159,7 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
     let mut math = empty_class("Math");
     math.properties.insert("PI".into(), Ty::Double);
     math.properties.insert("E".into(), Ty::Double);
+    math.properties.insert("Tau".into(), Ty::Double);
     for (n, arity) in [
         ("Abs", 1),
         ("Sqrt", 1),
@@ -173,16 +174,142 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
         ("Pow", 2),
         ("Min", 2),
         ("Max", 2),
+        ("Clamp", 3),
+        ("Log2", 1),
+        ("Log10", 1),
+        ("Atan2", 2),
+        ("Sign", 1),
+        ("Truncate", 1),
+        ("IsNaN", 1),
+        ("IsInfinity", 1),
+        ("Lerp", 3),
+        ("Asin", 1),
+        ("Acos", 1),
+        ("Atan", 1),
+        ("Sinh", 1),
+        ("Cosh", 1),
+        ("Tanh", 1),
+        ("Cbrt", 1),
+        ("Hypot", 2),
     ] {
-        let params = if arity == 1 {
-            vec![("x", Ty::Double)]
-        } else {
-            vec![("a", Ty::Double), ("b", Ty::Double)]
+        let params = match arity {
+            1 => vec![("x", Ty::Double)],
+            2 => vec![("a", Ty::Double), ("b", Ty::Double)],
+            _ => vec![("a", Ty::Double), ("b", Ty::Double), ("c", Ty::Double)],
         };
-        let ret = if n == "Abs" { Ty::Dyn } else { Ty::Double };
+        let ret = match n {
+            "Abs" => Ty::Dyn,
+            "Sign" => Ty::Int,
+            "Truncate" => Ty::Int,
+            "IsNaN" | "IsInfinity" => Ty::Bool,
+            _ => Ty::Double,
+        };
         math.methods.insert(n.into(), method(n, params, ret, true));
     }
     types.insert("Math".into(), math);
+
+    let mut string_mod = empty_class("String");
+    string_mod.methods.insert(
+        "Join".into(),
+        method(
+            "Join",
+            vec![
+                ("sep", Ty::String),
+                (
+                    "items",
+                    Ty::Array {
+                        elem: Box::new(Ty::Dyn),
+                        dims: 1,
+                    },
+                ),
+            ],
+            Ty::String,
+            true,
+        ),
+    );
+    string_mod.methods.insert(
+        "Format".into(),
+        method(
+            "Format",
+            vec![
+                ("template", Ty::String),
+                ("a", Ty::Dyn),
+                ("b", Ty::Dyn),
+            ],
+            Ty::String,
+            true,
+        ),
+    );
+    string_mod.methods.insert(
+        "IsNullOrEmpty".into(),
+        method("IsNullOrEmpty", vec![("value", Ty::String)], Ty::Bool, true),
+    );
+    string_mod.methods.insert(
+        "IsNullOrWhiteSpace".into(),
+        method(
+            "IsNullOrWhiteSpace",
+            vec![("value", Ty::String)],
+            Ty::Bool,
+            true,
+        ),
+    );
+    types.insert("String".into(), string_mod);
+
+    let mut convert = empty_class("Convert");
+    for (n, ret) in [
+        ("ToInt", Ty::Int),
+        ("ToFloat", Ty::Double),
+        ("ToBool", Ty::Bool),
+        ("ToString", Ty::String),
+        ("ToHex", Ty::String),
+        ("FromHex", Ty::Int),
+        (
+            "ToBytes",
+            Ty::Array {
+                elem: Box::new(Ty::Int),
+                dims: 1,
+            },
+        ),
+        ("FromBytes", Ty::String),
+        ("ToBase64", Ty::String),
+        ("FromBase64", Ty::String),
+        ("ToBinary", Ty::String),
+    ] {
+        convert
+            .methods
+            .insert(n.into(), method(n, vec![("value", Ty::Dyn)], ret, true));
+    }
+    types.insert("Convert".into(), convert);
+
+    let mut env = empty_class("Env");
+    env.properties.insert("OS".into(), Ty::String);
+    env.properties.insert("CurrentDir".into(), Ty::String);
+    env.properties.insert("Home".into(), Ty::String);
+    env.properties.insert(
+        "Args".into(),
+        Ty::Array {
+            elem: Box::new(Ty::String),
+            dims: 1,
+        },
+    );
+    env.methods.insert(
+        "Get".into(),
+        method("Get", vec![("name", Ty::String)], Ty::String, true),
+    );
+    env.methods.insert(
+        "Set".into(),
+        method(
+            "Set",
+            vec![("name", Ty::String), ("value", Ty::String)],
+            Ty::Void,
+            true,
+        ),
+    );
+    env.methods.insert(
+        "Has".into(),
+        method("Has", vec![("name", Ty::String)], Ty::Bool, true),
+    );
+    types.insert("Env".into(), env);
 
     let mut random = empty_class("Random");
     random.methods.insert("Next".into(), method("Next", vec![], Ty::Int, true));

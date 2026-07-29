@@ -36,6 +36,8 @@ colored = "3"
 walkdir = "2"
 uuid = { version = "1", features = ["v4"] }
 libloading = "0.8"
+flate2 = "1"
+zstd = { version = "0.13", default-features = false }
 
 [profile.release]
 lto = true

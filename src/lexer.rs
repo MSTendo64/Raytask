@@ -399,6 +399,12 @@ impl<'a> Lexer<'a> {
             '^' => TokenKind::Caret,
             '~' => TokenKind::Tilde,
             '?' => TokenKind::Question,
+            '.' if self.peek() == Some('.') && self.peek_at(1) == Some('=') => {
+                self.advance(); self.advance(); TokenKind::DotDotEq
+            }
+            '.' if self.peek() == Some('.') => {
+                self.advance(); TokenKind::DotDot
+            }
             '.' => TokenKind::Dot,
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,

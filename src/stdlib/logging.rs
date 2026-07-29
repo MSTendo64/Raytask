@@ -17,6 +17,7 @@ pub fn log(level: &str, args: &[Value]) -> RuntimeResult<Value> {
         .map(|a| a.as_string())
         .collect::<Vec<_>>()
         .join(" ");
-    eprintln!("[{}] {}", level, msg);
+    crate::debug_io::write_stderr(&format!("[{}] {}", level, msg));
     Ok(Value::Null)
 }
+ 

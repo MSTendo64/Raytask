@@ -2,18 +2,18 @@
 
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::value::Value;
-use std::io::{self, Write};
+use std::io;
+
 
 pub fn print_ln(args: &[Value]) -> RuntimeResult<Value> {
     let msg = args.iter().map(|a| a.as_string()).collect::<Vec<_>>().join(" ");
-    println!("{}", msg);
+    crate::debug_io::write_stdout(&msg);
     Ok(Value::Null)
 }
 
 pub fn write(args: &[Value]) -> RuntimeResult<Value> {
     let msg = args.iter().map(|a| a.as_string()).collect::<Vec<_>>().join(" ");
-    print!("{}", msg);
-    let _ = io::stdout().flush();
+    crate::debug_io::write_stdout_raw(&msg);
     Ok(Value::Null)
 }
 

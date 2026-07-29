@@ -121,3 +121,60 @@ fn accepts_stdlib_demo_types() {
     let report = check_source(&src).unwrap();
     assert!(report.ok(), "{}", report.format_all());
 }
+
+#[test]
+fn math_string_list_convert_and_env_extensions_typecheck() {
+    let src = r#"
+        void Main() {
+            assertEq(Math.Clamp(150, 0, 100), 100.0);
+            assertEq(Math.Sign(-7), -1);
+            assertEq(Math.Log2(8.0), 3.0);
+            assertEq(Math.Cbrt(27.0), 3.0);
+            assertEq(Math.Hypot(3.0, 4.0), 5.0);
+
+            assertEq("rt".PadLeft(4, "0"), "00rt");
+            assertEq("ab".Repeat(3), "ababab");
+            assertEq("banana".Count("a"), 3);
+            assertEq("hello".Insert(2, "X"), "heXllo");
+            assertEq("hello".Remove(1, 3), "ho");
+            assertEq(String.Join("-", ["a", "b", "c"]), "a-b-c");
+            assertEq(String.Format("{0}:{1}", "x", 7), "x:7");
+
+            var nums = [5, 3, 5, 1, 2];
+            var distinct = nums.Distinct().Sort();
+            assertEq(distinct.Count, 4);
+            assertEq(distinct[0], 1);
+            assertEq(distinct[3], 5);
+            assertEq(nums.Take(2).Count, 2);
+            assertEq(nums.Skip(3).Count, 2);
+            assertEq(nums.IndexOf(1), 3);
+            assertEq([[1, 2], [3], [4, 5]].Flatten().Count, 5);
+            assertEq([1, 2, 3, 4, 5].Chunk(2).Count, 3);
+            assertEq(List.Range(0, 3).Count, 3);
+            assertEq(List.Range(2, 4)[0], 2);
+            assertEq(List.Fill(9, 4).Count, 4);
+
+            assertEq(Convert.ToInt("42"), 42);
+            assertEq(Convert.ToFloat("2.5"), 2.5);
+            assertEq(Convert.ToBool(0), false);
+            assertEq(Convert.ToHex(255), "FF");
+            assertEq(Convert.FromHex("FF"), 255);
+            assertEq(Convert.ToBinary(10), "1010");
+            var bytes = Convert.ToBytes("Hi");
+            assertEq(bytes.Count, 2);
+            assertEq(Convert.FromBytes(bytes), "Hi");
+            var b64 = Convert.ToBase64("Hello");
+            assertEq(Convert.FromBase64(b64), "Hello");
+
+            Env.Set("RAYTASK_TEST_ENV", "ok");
+            assert(Env.Has("RAYTASK_TEST_ENV"));
+            assertEq(Env.Get("RAYTASK_TEST_ENV"), "ok");
+            assert(Env.Args.Count >= 1);
+            assert(Env.OS.Length > 0);
+            assert(Env.CurrentDir.Length > 0);
+        }
+    "#;
+    let report = check_source(src).unwrap();
+    assert!(report.ok(), "{}", report.format_all());
+}
+

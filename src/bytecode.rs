@@ -71,6 +71,16 @@ pub enum Op {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalDebug {
+    pub name: String,
+    pub slot: u8,
+    /// Inclusive start IP in this chunk's code.
+    pub start_ip: usize,
+    /// Exclusive end IP; `usize::MAX` while the local is still in scope at end of compile.
+    pub end_ip: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct Chunk {
     pub name: String,
     pub code: Vec<u8>,
@@ -80,6 +90,10 @@ pub struct Chunk {
     pub local_count: usize,
     /// If true, calling this chunk returns a Task and runs as a coroutine.
     pub is_async: bool,
+    /// Live ranges for debugger variable display.
+    pub local_debug: Vec<LocalDebug>,
+    /// Absolute or relative source path for this chunk (debug).
+    pub source: Option<String>,
 }
 
 impl Chunk {
@@ -92,6 +106,8 @@ impl Chunk {
             arity: 0,
             local_count: 0,
             is_async: false,
+            local_debug: Vec::new(),
+            source: None,
         }
     }
 
@@ -165,6 +181,7 @@ pub struct Module {
     pub globals: Vec<String>,
     pub classes: Vec<ClassInfo>,
     pub ffi: crate::ffi::FfiModuleInfo,
+    pub stdlib_enabled: bool,
 }
 
 #[derive(Debug, Clone)]

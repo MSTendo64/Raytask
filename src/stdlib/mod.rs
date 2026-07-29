@@ -3,20 +3,25 @@
 pub mod ids;
 
 mod collections;
+mod compress;
+mod generator;
 mod crypto;
 mod fs;
 mod io;
-mod json;
+pub mod json;
 mod logging;
 mod math;
 mod net;
 mod regex_ops;
 mod result_ops;
+mod streams;
 mod string_ops;
 mod test_ops;
+mod threads;
 mod time;
 mod unsafe_mem;
 mod yaml;
+mod extra;
 
 use crate::error::RuntimeResult;
 use crate::value::{ObjectInstance, Value};
@@ -45,6 +50,12 @@ pub fn builtin_global(name: &str) -> Option<Value> {
         "GenerateGuid" => Value::Native(GENERATE_GUID),
         "GetTime" => Value::Native(GET_TIME),
         "gc" => Value::Native(GC_COLLECT),
+        "Mutex" => Value::TypeModule("Mutex".into()),
+        "Channel" => Value::TypeModule("Channel".into()),
+        "TimeSpan" => Value::TypeModule("TimeSpan".into()),
+        "Stream" => Value::TypeModule("Stream".into()),
+        "Compress" => Value::TypeModule("Compress".into()),
+        "Generator" => Value::TypeModule("Generator".into()),
         "assert" => Value::Native(ASSERT),
         "assertEq" => Value::Native(ASSERT_EQ),
         "malloc" => Value::Native(MALLOC),
@@ -67,6 +78,10 @@ pub fn builtin_global(name: &str) -> Option<Value> {
         "Random" => Value::TypeModule("Random".into()),
         "Logger" => Value::TypeModule("Logger".into()),
         "string" => Value::TypeModule("string".into()),
+        "String" => Value::TypeModule("String".into()),
+        "List" => Value::TypeModule("List".into()),
+        "Convert" => Value::TypeModule("Convert".into()),
+        "Env" => Value::TypeModule("Env".into()),
         _ => return None,
     })
 }
@@ -169,6 +184,56 @@ pub fn get_property(obj: &Value, name: &str) -> RuntimeResult<Value> {
                     "Debug" => Ok(Value::Native(LOG_DEBUG)),
                     _ => Err(undef(&o.class_name, name)),
                 },
+                "Mutex" => match name {
+                    "Lock" => Ok(Value::Native(MUTEX_LOCK)),
+                    "Unlock" => Ok(Value::Native(MUTEX_UNLOCK)),
+                    "TryLock" => Ok(Value::Native(MUTEX_TRY_LOCK)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "Channel" => match name {
+                    "Send" => Ok(Value::Native(CHANNEL_SEND)),
+                    "Recv" => Ok(Value::Native(CHANNEL_RECV)),
+                    "TryRecv" => Ok(Value::Native(CHANNEL_TRY_RECV)),
+                    "Close" => Ok(Value::Native(CHANNEL_CLOSE)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "TimeSpan" => match name {
+                    "Add" => Ok(Value::Native(TIMESPAN_ADD)),
+                    "Subtract" | "Sub" => Ok(Value::Native(TIMESPAN_SUB)),
+                    "TotalMilliseconds" | "Ms" => Ok(Value::Native(TIMESPAN_TOTAL_MS)),
+                    "TotalSeconds" | "Seconds" => Ok(Value::Native(TIMESPAN_TOTAL_SECS)),
+                    "ToString" => Ok(Value::Native(TIMESPAN_TO_STRING)),
+                    n => Ok(o.fields.get(n).cloned().unwrap_or(Value::Null)),
+                },
+                "DateTime" => match name {
+                    "AddSpan" | "Add" => Ok(Value::Native(DT_ADD_SPAN)),
+                    "SubtractSpan" | "Subtract" => Ok(Value::Native(DT_SUB_SPAN)),
+                    "Diff" => Ok(Value::Native(DT_DIFF)),
+                    "Format" => Ok(Value::Native(DT_FORMAT)),
+                    "ToString" => Ok(Value::Native(DT_TO_STRING)),
+                    "Year" | "Month" | "Day" | "Hour" | "Minute" | "Second" | "Ticks" | "Utc" => {
+                        Ok(o.fields.get(name).cloned().unwrap_or(Value::Null))
+                    }
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "Generator" => match name {
+                    "Next" => Ok(Value::Native(GEN_NEXT)),
+                    "HasNext" => Ok(Value::Native(GEN_HAS_NEXT)),
+                    "Reset" => Ok(Value::Native(GEN_RESET)),
+                    "ToList" => Ok(Value::Native(GEN_TO_LIST)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "Stream" => match name {
+                    "Read" => Ok(Value::Native(STREAM_READ)),
+                    "ReadLine" => Ok(Value::Native(STREAM_READ_LINE)),
+                    "Write" => Ok(Value::Native(STREAM_WRITE)),
+                    "WriteLine" => Ok(Value::Native(STREAM_WRITE_LINE)),
+                    "Seek" => Ok(Value::Native(STREAM_SEEK)),
+                    "Flush" => Ok(Value::Native(STREAM_FLUSH)),
+                    "Close" => Ok(Value::Native(STREAM_CLOSE)),
+                    "Mode" => Ok(o.fields.get("Mode").cloned().unwrap_or(Value::Null)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
                 _ => Err(crate::error::RuntimeError::UndefinedVariable(name.into())),
             }
         }
@@ -190,6 +255,17 @@ pub fn get_property(obj: &Value, name: &str) -> RuntimeResult<Value> {
             "Where" => Ok(Value::Native(LIST_WHERE)),
             "Select" => Ok(Value::Native(LIST_SELECT)),
             "ParallelMap" => Ok(Value::Native(LIST_PARALLEL_MAP)),
+            "Sort" | "SortAsc" => Ok(Value::Native(LIST_SORT)),
+            "SortDesc" => Ok(Value::Native(LIST_SORT_DESC)),
+            "Reverse" => Ok(Value::Native(LIST_REVERSE)),
+            "Distinct" => Ok(Value::Native(LIST_DISTINCT)),
+            "Take" => Ok(Value::Native(LIST_TAKE)),
+            "Skip" => Ok(Value::Native(LIST_SKIP)),
+            "Flatten" => Ok(Value::Native(LIST_FLATTEN)),
+            "Zip" => Ok(Value::Native(LIST_ZIP)),
+            "Chunk" => Ok(Value::Native(LIST_CHUNK)),
+            "IndexOf" => Ok(Value::Native(LIST_INDEX_OF)),
+            "Copy" => Ok(Value::Native(LIST_COPY)),
             _ => Err(crate::error::RuntimeError::UndefinedVariable(format!(
                 "List.{}",
                 name
@@ -221,6 +297,19 @@ pub fn get_property(obj: &Value, name: &str) -> RuntimeResult<Value> {
             "Replace" => Ok(Value::Native(STR_REPLACE)),
             "Substring" => Ok(Value::Native(STR_SUBSTRING)),
             "Split" => Ok(Value::Native(STR_SPLIT)),
+            "PadLeft" => Ok(Value::Native(STR_PAD_LEFT)),
+            "PadRight" => Ok(Value::Native(STR_PAD_RIGHT)),
+            "Repeat" => Ok(Value::Native(STR_REPEAT)),
+            "Reverse" => Ok(Value::Native(STR_REVERSE)),
+            "Chars" => Ok(Value::Native(STR_CHARS)),
+            "Lines" => Ok(Value::Native(STR_LINES)),
+            "ParseInt" => Ok(Value::Native(STR_PARSE_INT)),
+            "ParseFloat" => Ok(Value::Native(STR_PARSE_FLOAT)),
+            "IsEmpty" => Ok(Value::Native(STR_IS_EMPTY)),
+            "IsWhitespace" => Ok(Value::Native(STR_IS_WHITESPACE)),
+            "Count" => Ok(Value::Native(STR_COUNT)),
+            "Remove" => Ok(Value::Native(STR_REMOVE)),
+            "Insert" => Ok(Value::Native(STR_INSERT)),
             "ToString" => Ok(Value::String(s.clone())),
             _ => Err(crate::error::RuntimeError::UndefinedVariable(format!(
                 "string.{}",
@@ -294,17 +383,88 @@ fn static_member(module: &str, name: &str) -> RuntimeResult<Value> {
         ("Task", "WhenAll") => TASK_WHEN_ALL,
         ("Thread", "Run") => THREAD_RUN,
         ("Thread", "Sleep") => THREAD_SLEEP,
+        ("Mutex", "New") => MUTEX_NEW,
+        ("Mutex", "Lock") => MUTEX_LOCK,
+        ("Mutex", "Unlock") => MUTEX_UNLOCK,
+        ("Mutex", "TryLock") => MUTEX_TRY_LOCK,
+        ("Channel", "New") => CHANNEL_NEW,
+        ("Channel", "Send") => CHANNEL_SEND,
+        ("Channel", "Recv") => CHANNEL_RECV,
+        ("Channel", "TryRecv") => CHANNEL_TRY_RECV,
+        ("Channel", "Close") => CHANNEL_CLOSE,
+        ("TimeSpan", "FromMilliseconds") | ("TimeSpan", "FromMs") => TIMESPAN_FROM_MS,
+        ("TimeSpan", "FromSeconds") => TIMESPAN_FROM_SECS,
+        ("TimeSpan", "FromMinutes") => TIMESPAN_FROM_MINS,
+        ("TimeSpan", "FromHours") => TIMESPAN_FROM_HOURS,
+        ("TimeSpan", "Zero") => return Ok(time::timespan_from_ms(&[Value::Int(0)])?),
+        ("DateTime", "Parse") => DT_PARSE,
+        ("DateTime", "Format") => DT_FORMAT,
+        ("Stream", "OpenRead") => STREAM_OPEN_READ,
+        ("Stream", "OpenWrite") => STREAM_OPEN_WRITE,
+        ("Compress", "GzCompress") => GZ_COMPRESS,
+        ("Compress", "GzDecompress") => GZ_DECOMPRESS,
+        ("Compress", "GzCompressFile") => GZ_COMPRESS_FILE,
+        ("Compress", "GzDecompressFile") => GZ_DECOMPRESS_FILE,
+        ("Compress", "ZstdCompress") => ZSTD_COMPRESS,
+        ("Compress", "ZstdDecompress") => ZSTD_DECOMPRESS,
+        ("Compress", "ZstdCompressFile") => ZSTD_COMPRESS_FILE,
+        ("Compress", "ZstdDecompressFile") => ZSTD_DECOMPRESS_FILE,
+        ("Generator", "From") => GEN_FROM,
+        ("Generator", "Range") => GEN_RANGE,
+        ("Generator", "Repeat") => GEN_REPEAT,
+        ("Generator", "Empty") => GEN_EMPTY,
         ("Gc", "Collect") | ("GC", "Collect") => GC_COLLECT,
         ("Gc", "Stats") | ("GC", "Stats") => GC_STATS,
         ("Logger", "Info") => LOG_INFO,
         ("Logger", "Warn") => LOG_WARN,
         ("Logger", "Error") => LOG_ERROR,
         ("Logger", "Debug") => LOG_DEBUG,
-        ("string", "Join") => STR_JOIN,
-        ("string", "IsNullOrEmpty") => {
-            // return a native that checks string
-            return Ok(Value::Native(IS_NULL)); // fallback; real check in call if needed
-        }
+        ("string", "Join") | ("String", "Join") => STR_JOIN,
+        ("String", "Format") => STR_FORMAT,
+        ("String", "IsNullOrEmpty") | ("string", "IsNullOrEmpty") => STR_IS_EMPTY,
+        ("String", "IsNullOrWhiteSpace") | ("string", "IsNullOrWhiteSpace") => STR_IS_WHITESPACE,
+        // Math extended
+        ("Math", "Clamp") => MATH_CLAMP,
+        ("Math", "Log2") => MATH_LOG2,
+        ("Math", "Log10") => MATH_LOG10,
+        ("Math", "Atan2") => MATH_ATAN2,
+        ("Math", "Sign") => MATH_SIGN,
+        ("Math", "Truncate") => MATH_TRUNCATE,
+        ("Math", "IsNaN") => MATH_IS_NAN,
+        ("Math", "IsInfinity") | ("Math", "IsInf") => MATH_IS_INF,
+        ("Math", "Lerp") => MATH_LERP,
+        ("Math", "Asin") => MATH_ASIN,
+        ("Math", "Acos") => MATH_ACOS,
+        ("Math", "Atan") => MATH_ATAN,
+        ("Math", "Sinh") => MATH_SINH,
+        ("Math", "Cosh") => MATH_COSH,
+        ("Math", "Tanh") => MATH_TANH,
+        ("Math", "Cbrt") => MATH_CBRT,
+        ("Math", "Hypot") => MATH_HYPOT,
+        ("Math", "Tau") => return Ok(Value::Float(std::f64::consts::TAU)),
+        // List static
+        ("List", "Fill") => LIST_FILL,
+        ("List", "Range") => LIST_RANGE,
+        // Convert static
+        ("Convert", "ToInt") => CONV_TO_INT,
+        ("Convert", "ToFloat") => CONV_TO_FLOAT,
+        ("Convert", "ToBool") => CONV_TO_BOOL,
+        ("Convert", "ToString") => CONV_TO_STRING,
+        ("Convert", "ToHex") => CONV_TO_HEX,
+        ("Convert", "FromHex") => CONV_FROM_HEX,
+        ("Convert", "ToBytes") => CONV_TO_BYTES,
+        ("Convert", "FromBytes") => CONV_FROM_BYTES,
+        ("Convert", "ToBase64") => CONV_TO_BASE64,
+        ("Convert", "FromBase64") => CONV_FROM_BASE64,
+        ("Convert", "ToBinary") => CONV_TO_BINARY,
+        // Env static
+        ("Env", "GetVar") | ("Env", "Get") => ENV_GET_VAR,
+        ("Env", "SetVar") | ("Env", "Set") => ENV_SET_VAR,
+        ("Env", "HasVar") | ("Env", "Has") => ENV_HAS_VAR,
+        ("Env", "Args") => return extra::env_args(&[]),
+        ("Env", "CurrentDir") => return extra::env_current_dir(&[]),
+        ("Env", "OS") => return extra::env_os(&[]),
+        ("Env", "Home") => return extra::env_home(&[]),
         _ => {
             return Err(crate::error::RuntimeError::UndefinedVariable(format!(
                 "{}.{}",
@@ -501,6 +661,147 @@ pub fn call_native(id: usize, args: &[Value]) -> RuntimeResult<Value> {
         LOG_WARN => logging::log("WARN", args),
         LOG_ERROR => logging::log("ERROR", args),
         LOG_DEBUG => logging::log("DEBUG", args),
+
+        // Mutex
+        MUTEX_NEW => threads::mutex_new(args),
+        MUTEX_LOCK => threads::mutex_lock(args),
+        MUTEX_UNLOCK => threads::mutex_unlock(args),
+        MUTEX_TRY_LOCK => threads::mutex_try_lock(args),
+
+        // Channel
+        CHANNEL_NEW => threads::channel_new(args),
+        CHANNEL_SEND => threads::channel_send(args),
+        CHANNEL_RECV => threads::channel_recv(args),
+        CHANNEL_TRY_RECV => threads::channel_try_recv(args),
+        CHANNEL_CLOSE => threads::channel_close(args),
+
+        // TimeSpan
+        TIMESPAN_FROM_MS => time::timespan_from_ms(args),
+        TIMESPAN_FROM_SECS => time::timespan_from_secs(args),
+        TIMESPAN_FROM_MINS => time::timespan_from_mins(args),
+        TIMESPAN_FROM_HOURS => time::timespan_from_hours(args),
+        TIMESPAN_ADD => time::timespan_add(args),
+        TIMESPAN_SUB => time::timespan_sub(args),
+        TIMESPAN_TOTAL_MS => time::timespan_total_ms(args),
+        TIMESPAN_TOTAL_SECS => time::timespan_total_secs(args),
+        TIMESPAN_TO_STRING => time::timespan_to_string(args),
+
+        // DateTime extended
+        DT_ADD_SPAN => time::dt_add_span(args),
+        DT_SUB_SPAN => time::dt_sub_span(args),
+        DT_DIFF => time::dt_diff(args),
+        DT_FORMAT => time::dt_format(args),
+        DT_PARSE => time::dt_parse(args),
+        DT_YEAR => time::dt_field(args, "Year"),
+        DT_MONTH => time::dt_field(args, "Month"),
+        DT_DAY => time::dt_field(args, "Day"),
+        DT_HOUR => time::dt_field(args, "Hour"),
+        DT_MINUTE => time::dt_field(args, "Minute"),
+        DT_SECOND => time::dt_field(args, "Second"),
+
+        // File Streams
+        STREAM_OPEN_READ => streams::open_read(args),
+        STREAM_OPEN_WRITE => streams::open_write(args),
+        STREAM_READ => streams::stream_read(args),
+        STREAM_READ_LINE => streams::stream_read_line(args),
+        STREAM_WRITE => streams::stream_write(args),
+        STREAM_WRITE_LINE => streams::stream_write_line(args),
+        STREAM_SEEK => streams::stream_seek(args),
+        STREAM_FLUSH => streams::stream_flush(args),
+        STREAM_CLOSE => streams::stream_close(args),
+
+        // Generator
+        GEN_FROM => generator::gen_from(args),
+        GEN_RANGE => generator::gen_range(args),
+        GEN_REPEAT => generator::gen_repeat(args),
+        GEN_EMPTY => generator::gen_empty(args),
+        GEN_NEXT => generator::gen_next(args),
+        GEN_HAS_NEXT => generator::gen_has_next(args),
+        GEN_RESET => generator::gen_reset(args),
+        GEN_TO_LIST => generator::gen_to_list(args),
+
+        // Compression
+        GZ_COMPRESS => compress::gz_compress(args),
+        GZ_DECOMPRESS => compress::gz_decompress(args),
+        GZ_COMPRESS_FILE => compress::gz_compress_file(args),
+        GZ_DECOMPRESS_FILE => compress::gz_decompress_file(args),
+        ZSTD_COMPRESS => compress::zstd_compress(args),
+        ZSTD_DECOMPRESS => compress::zstd_decompress(args),
+        ZSTD_COMPRESS_FILE => compress::zstd_compress_file(args),
+        ZSTD_DECOMPRESS_FILE => compress::zstd_decompress_file(args),
+
+        // Math extended
+        MATH_CLAMP => extra::math_clamp(args),
+        MATH_LOG2 => extra::math_log2(args),
+        MATH_LOG10 => extra::math_log10(args),
+        MATH_ATAN2 => extra::math_atan2(args),
+        MATH_SIGN => extra::math_sign(args),
+        MATH_TRUNCATE => extra::math_truncate(args),
+        MATH_IS_NAN => extra::math_is_nan(args),
+        MATH_IS_INF => extra::math_is_inf(args),
+        MATH_LERP => extra::math_lerp(args),
+        MATH_ASIN => extra::math_asin(args),
+        MATH_ACOS => extra::math_acos(args),
+        MATH_ATAN => extra::math_atan(args),
+        MATH_SINH => extra::math_sinh(args),
+        MATH_COSH => extra::math_cosh(args),
+        MATH_TANH => extra::math_tanh(args),
+        MATH_CBRT => extra::math_cbrt(args),
+        MATH_HYPOT => extra::math_hypot(args),
+
+        // String extended
+        STR_PAD_LEFT => extra::str_pad_left(args),
+        STR_PAD_RIGHT => extra::str_pad_right(args),
+        STR_REPEAT => extra::str_repeat(args),
+        STR_REVERSE => extra::str_reverse(args),
+        STR_CHARS => extra::str_chars(args),
+        STR_LINES => extra::str_lines(args),
+        STR_PARSE_INT => extra::str_parse_int(args),
+        STR_PARSE_FLOAT => extra::str_parse_float(args),
+        STR_IS_EMPTY => extra::str_is_empty(args),
+        STR_IS_WHITESPACE => extra::str_is_whitespace(args),
+        STR_FORMAT => extra::str_format(args),
+        STR_COUNT => extra::str_count(args),
+        STR_REMOVE => extra::str_remove(args),
+        STR_INSERT => extra::str_insert(args),
+
+        // List extended
+        LIST_SORT => extra::list_sort(args),
+        LIST_SORT_DESC => extra::list_sort_desc(args),
+        LIST_REVERSE => extra::list_reverse(args),
+        LIST_DISTINCT => extra::list_distinct(args),
+        LIST_COUNT => extra::list_count(args),
+        LIST_TAKE => extra::list_take(args),
+        LIST_SKIP => extra::list_skip(args),
+        LIST_FLATTEN => extra::list_flatten(args),
+        LIST_ZIP => extra::list_zip(args),
+        LIST_CHUNK => extra::list_chunk(args),
+        LIST_INDEX_OF => extra::list_index_of(args),
+        LIST_FILL => extra::list_fill(args),
+        LIST_RANGE => extra::list_range_static(args),
+        LIST_COPY => extra::list_copy(args),
+
+        // Convert
+        CONV_TO_INT => extra::conv_to_int(args),
+        CONV_TO_FLOAT => extra::conv_to_float(args),
+        CONV_TO_BOOL => extra::conv_to_bool(args),
+        CONV_TO_STRING => extra::conv_to_string(args),
+        CONV_TO_HEX => extra::conv_to_hex(args),
+        CONV_FROM_HEX => extra::conv_from_hex(args),
+        CONV_TO_BYTES => extra::conv_to_bytes(args),
+        CONV_FROM_BYTES => extra::conv_from_bytes(args),
+        CONV_TO_BASE64 => extra::conv_to_base64(args),
+        CONV_FROM_BASE64 => extra::conv_from_base64(args),
+        CONV_TO_BINARY => extra::conv_to_binary(args),
+
+        // Env
+        ENV_GET_VAR => extra::env_get_var(args),
+        ENV_SET_VAR => extra::env_set_var(args),
+        ENV_HAS_VAR => extra::env_has_var(args),
+        ENV_ARGS => extra::env_args(args),
+        ENV_CURRENT_DIR => extra::env_current_dir(args),
+        ENV_OS => extra::env_os(args),
+        ENV_HOME => extra::env_home(args),
 
         _ => Err(crate::error::RuntimeError::Message(format!(
             "unknown native #{}",

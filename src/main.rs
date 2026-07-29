@@ -43,9 +43,12 @@ enum Commands {
         /// Enable GC
         #[arg(long)]
         gc: bool,
-        /// Include debug info
-        #[arg(long)]
+        /// Include debug info / emit `.rtdbg` symbols (-g)
+        #[arg(short = 'g', long)]
         debug: bool,
+        /// Disable built-in bstd.* imports, types, and runtime globals
+        #[arg(long)]
+        no_stdlib: bool,
         /// Skip typechecker
         #[arg(long)]
         no_typecheck: bool,
@@ -63,6 +66,9 @@ enum Commands {
         /// Collect on every allocation (debug)
         #[arg(long)]
         gc_stress: bool,
+        /// Disable built-in bstd.* imports, types, and runtime globals
+        #[arg(long)]
+        no_stdlib: bool,
         /// Skip typechecker
         #[arg(long)]
         no_typecheck: bool,
@@ -73,6 +79,9 @@ enum Commands {
     /// Parse/check a file without running
     Check {
         file: PathBuf,
+        /// Disable built-in bstd.* imports, types, and runtime globals
+        #[arg(long)]
+        no_stdlib: bool,
     },
     /// Run [test] attributed functions
     Test {
@@ -97,20 +106,26 @@ enum Commands {
     Ast {
         file: PathBuf,
     },
-    /// Install a package (local or remote registry)
+    /// Install a package from a configured repository
     Install {
+        /// Package name, optionally with version: `MyLib` or `MyLib@1.2.0`
         package: String,
+        /// Show package description and instructions before installing
+        #[arg(long)]
+        info: bool,
     },
-    /// Uninstall a package
+    /// Uninstall a package from external/
     Uninstall {
         package: String,
     },
-    /// Update packages
+    /// Update packages declared in project.rtp
     Update,
-    /// Search packages in local/remote registry
+    /// Search packages across configured repositories
     Search {
         query: String,
     },
+    /// List installed packages in external/
+    List,
     /// Publish a package to local or remote registry
     Publish {
         #[arg(default_value = ".")]
@@ -133,6 +148,24 @@ enum Commands {
     /// Analyze a .csproj for conversion notes
     Analyze {
         csproj: PathBuf,
+    },
+    /// Debug Adapter Protocol server (stdio) for VS Code / editors
+    Dap,
+    /// Generate debug symbols (`.rtdbg`) for a source file
+    Symbols {
+        file: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Generate RayTask FFI decls from a C header (no gcc)
+    Bind {
+        /// C header file (.h)
+        header: PathBuf,
+        /// Shared library name (.dll / .so / .dylib)
+        #[arg(long)]
+        lib: String,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Link a .rtbc bytecode file into a native binary
     Link {
@@ -195,6 +228,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             no_gc,
             gc: _,
             debug,
+            no_stdlib,
             no_typecheck,
         } => {
             let cli_target = target;
@@ -206,6 +240,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 optimize,
                 no_gc,
                 debug,
+                no_stdlib,
                 no_typecheck,
             )?;
             // Ensure declared dependencies are present
@@ -232,6 +267,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             let out = compile_file(file.to_str().unwrap(), &options)?;
             println!("{} {}", "Built".green().bold(), out);
+            if options.debug {
+                println!(
+                    "{} debug symbols (.rtdbg) written alongside output",
+                    "note:".cyan()
+                );
+            }
             if !options.gc {
                 println!("{} GC disabled (--no-gc)", "note:".yellow());
             }
@@ -241,6 +282,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             gc: _,
             no_gc,
             gc_stress,
+            no_stdlib,
             no_typecheck,
             args: _,
         } => {
@@ -257,15 +299,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 gc,
                 gc_stress,
                 no_typecheck,
+                no_stdlib,
             };
             if !opts.gc {
                 println!("{} GC disabled (--no-gc)", "note:".yellow());
             }
             run_file_with(&file, &opts)?;
         }
-        Commands::Check { file } => {
-            let program = parse_file(&file)?;
-            let report = raytask::sema::typecheck(&program);
+        Commands::Check { file, no_stdlib } => {
+            let program = raytask::parse_file_with_stdlib(&file, !no_stdlib)?;
+            let report = raytask::sema::typecheck_with_stdlib(&program, !no_stdlib);
             if report.ok() {
                 println!(
                     "{} {} — typecheck passed ({} top-level items)",
@@ -311,15 +354,18 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let program = parse_file(&file)?;
             println!("{:#?}", program);
         }
-        Commands::Install { package } => {
-            // Support "name@version"
+        Commands::Install { package, info } => {
             let (name, ver) = if let Some((n, v)) = package.split_once('@') {
                 (n, Some(v))
             } else {
                 (package.as_str(), None)
             };
-            // Also add to project.rtp dependencies if present
-            let path = raytask::project::install_package(name, ver)?;
+            let path = raytask::registry::install(raytask::registry::InstallOptions {
+                name,
+                version: ver,
+                show_info: info,
+            })
+            .map_err(|e| raytask::error::CompileError::Io { message: e })?;
             println!(
                 "{} {} → {}",
                 "Installed".green().bold(),
@@ -327,11 +373,13 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 path.display()
             );
             if Path::new("project.rtp").exists() {
-                append_dependency_to_project(name, ver.unwrap_or("0.1.0"))?;
+                append_dependency_to_project(name, ver.unwrap_or("*"))?;
             }
         }
         Commands::Uninstall { package } => {
-            if raytask::project::uninstall_package(&package)? {
+            if raytask::registry::uninstall(&package)
+                .map_err(|e| raytask::error::CompileError::Io { message: e })?
+            {
                 println!("{} {}", "Removed".green().bold(), package);
             } else {
                 println!("{} package not found", "warning:".yellow());
@@ -353,17 +401,30 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Search { query } => {
-            let found = raytask::project::search_packages(&query)?;
-            if found.is_empty() {
+            let results = raytask::registry::search(&query);
+            if results.is_empty() {
                 println!("{}", "No packages matched.".yellow());
             } else {
-                for p in found {
+                for r in results {
                     println!(
-                        "{} @ {} {}",
-                        p.name.green().bold(),
-                        p.version,
-                        p.description.unwrap_or_default()
+                        "{} @ {}  [{}]  {}",
+                        r.entry.name.green().bold(),
+                        r.entry.version,
+                        r.repo_name.cyan(),
+                        r.entry.description.as_deref().unwrap_or("")
                     );
+                }
+            }
+        }
+        Commands::List => {
+            let pkgs = raytask::registry::list_installed();
+            if pkgs.is_empty() {
+                println!("{}", "No packages installed in external/.".yellow());
+            } else {
+                println!("{:<24} {:<12} {}", "Package", "Version", "Repository");
+                println!("{}", "─".repeat(56));
+                for p in pkgs {
+                    println!("{:<24} {:<12} {}", p.name.green(), p.version, p.repo.cyan());
                 }
             }
         }
@@ -427,6 +488,57 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("{} {}", "Linked".green().bold(), result.output.display());
         }
+        Commands::Bind {
+            header,
+            lib,
+            output,
+        } => {
+            let parsed = raytask::c_header::parse_header_file(&header)?;
+            let text = raytask::c_header::prototypes_to_raytask(&lib, &parsed.prototypes);
+            if let Some(out) = output {
+                std::fs::write(&out, &text)?;
+                println!(
+                    "{} {} — {} prototype(s) → {}",
+                    "Bound".green().bold(),
+                    header.display(),
+                    parsed.prototypes.len(),
+                    out.display()
+                );
+            } else {
+                print!("{}", text);
+                eprintln!(
+                    "{} {} prototype(s) from {}",
+                    "note:".cyan(),
+                    parsed.prototypes.len(),
+                    header.display()
+                );
+            }
+        }
+        Commands::Dap => {
+            raytask::dap::run_dap()?;
+        }
+        Commands::Symbols { file, output } => {
+            let program = parse_file(&file)?;
+            let report = raytask::sema::typecheck(&program);
+            if !report.ok() {
+                eprint!("{}", report.format_all());
+                std::process::exit(1);
+            }
+            let program = raytask::mono::monomorphize(program);
+            let mut module = raytask::compiler::Compiler::new()
+                .with_source(file.display().to_string())
+                .compile(&program)?;
+            raytask::debug_symbols::stamp_source(&mut module, &file);
+            let out = output.unwrap_or_else(|| raytask::debug_symbols::sidecar_path(&file));
+            let sym = raytask::debug_symbols::DebugSymbols::from_module(&module, &file, None);
+            sym.write_file(&out)?;
+            println!("{} {}", "Symbols".green().bold(), out.display());
+            println!(
+                "  {} chunk(s), {} global(s)",
+                sym.chunks.len(),
+                sym.globals.len()
+            );
+        }
         Commands::Doc { path } => {
             generate_docs(&path)?;
         }
@@ -442,6 +554,7 @@ fn resolve_build_context(
     optimize: OptArg,
     no_gc: bool,
     debug: bool,
+    no_stdlib: bool,
     no_typecheck: bool,
 ) -> Result<(PathBuf, BuildOptions), Box<dyn std::error::Error>> {
     let file = resolve_entry(file)?;
@@ -473,6 +586,7 @@ fn resolve_build_context(
         platform,
         output,
         no_typecheck,
+        no_stdlib,
     };
     Ok((file, options))
 }
@@ -503,7 +617,7 @@ fn generate_docs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|e| e.ok())
             .map(|e| e.path().to_path_buf())
             .filter(|p| p.extension().map(|e| e == "rt").unwrap_or(false))
-            .collect()
+            .collect::<Vec<_>>()
     };
     let out_dir = Path::new("docs").join("api");
     std::fs::create_dir_all(&out_dir)?;
@@ -632,7 +746,7 @@ fn run_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|e| e.ok())
             .map(|e| e.path().to_path_buf())
             .filter(|p| p.extension().map(|e| e == "rt").unwrap_or(false))
-            .collect()
+            .collect::<Vec<_>>()
     };
 
     for file in files {
