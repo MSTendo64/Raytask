@@ -2,8 +2,9 @@
   "name": "raytask",
   "displayName": "RayTask",
   "description": "Language support and debugging for the RayTask programming language",
-  "version": "0.1.2",
+  "version": "0.1.3",
    "publisher": "raytask",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/MSTendo64/Raytask.git"

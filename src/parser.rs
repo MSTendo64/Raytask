@@ -574,9 +574,17 @@ impl Parser {
             }));
         }
 
+        let is_static = self.match_kind(&[TokenKind::Static]);
+        let is_virtual = self.match_kind(&[TokenKind::Virtual]);
+        let is_override = self.match_kind(&[TokenKind::Override]);
+        let is_abstract = self.match_kind(&[TokenKind::Abstract]);
+        let is_async = self.match_kind(&[TokenKind::Async]);
+        let is_unsafe = self.match_kind(&[TokenKind::Unsafe]);
+        let is_const = self.match_kind(&[TokenKind::Const]);
+
         // property
         if self.check(&TokenKind::Property) {
-            return Ok(Member::Property(self.parse_property(access)?));
+            return Ok(Member::Property(self.parse_property(access, is_static)?));
         }
 
         // operator
@@ -602,12 +610,6 @@ impl Parser {
 
         // Indexer: Type this[...] 
         // Method / field
-        let is_virtual = self.match_kind(&[TokenKind::Virtual]);
-        let is_override = self.match_kind(&[TokenKind::Override]);
-        let is_abstract = self.match_kind(&[TokenKind::Abstract]);
-        let is_async = self.match_kind(&[TokenKind::Async]);
-        let is_unsafe = self.match_kind(&[TokenKind::Unsafe]);
-        let is_const = self.match_kind(&[TokenKind::Const]);
 
         // Could be field `int x;` or `int x = 1;` or method `int Foo(...)`
         let ty = if self.check(&TokenKind::Void) || self.is_type_start() {
@@ -663,6 +665,7 @@ impl Parser {
                 access,
                 is_async,
                 is_unsafe,
+                is_static,
                 is_virtual,
                 is_override,
                 is_abstract,
@@ -687,6 +690,7 @@ impl Parser {
         self.expect(TokenKind::Semicolon, "expected ';' after field")?;
         Ok(Member::Field(FieldDecl {
             access,
+            is_static,
             is_const,
             ty,
             name,
@@ -720,7 +724,7 @@ impl Parser {
         Ok(op.to_string())
     }
 
-    fn parse_property(&mut self, access: Access) -> CompileResult<PropertyDecl> {
+    fn parse_property(&mut self, access: Access, is_static: bool) -> CompileResult<PropertyDecl> {
         let start = self.current().span;
         self.expect(TokenKind::Property, "expected 'property'")?;
         let (name, _) = self.expect_ident()?;
@@ -729,6 +733,7 @@ impl Parser {
         let (getter, setter, auto) = self.parse_property_body()?;
         Ok(PropertyDecl {
             access,
+            is_static,
             name,
             ty,
             getter,
@@ -784,6 +789,7 @@ impl Parser {
         let start = self.current().span;
         let is_async = self.match_kind(&[TokenKind::Async]);
         let is_unsafe = self.match_kind(&[TokenKind::Unsafe]);
+        let is_static = self.match_kind(&[TokenKind::Static]);
         let is_virtual = self.match_kind(&[TokenKind::Virtual]);
         let is_override = self.match_kind(&[TokenKind::Override]);
 
@@ -815,6 +821,7 @@ impl Parser {
             access,
             is_async,
             is_unsafe,
+            is_static,
             is_virtual,
             is_override,
             is_abstract,

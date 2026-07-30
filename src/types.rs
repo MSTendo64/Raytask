@@ -44,6 +44,17 @@ pub enum Ty {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeCategory {
+    Value,
+    Reference,
+    Nullable,
+    Pointer,
+    Dynamic,
+    TypeParameter,
+    Error,
+}
+
 impl Ty {
     pub fn named(name: impl Into<String>) -> Self {
         Ty::Named(name.into())
@@ -102,8 +113,42 @@ impl Ty {
         matches!(self, Ty::Bool | Ty::Dyn | Ty::Error)
     }
 
+    pub fn category(&self) -> TypeCategory {
+        match self {
+            Ty::Void
+            | Ty::Bool
+            | Ty::Byte
+            | Ty::SByte
+            | Ty::Short
+            | Ty::UShort
+            | Ty::Int
+            | Ty::UInt
+            | Ty::Long
+            | Ty::ULong
+            | Ty::Float
+            | Ty::Double
+            | Ty::Decimal
+            | Ty::Char => TypeCategory::Value,
+            Ty::String | Ty::Named(_) | Ty::Generic { .. } | Ty::Array { .. } | Ty::Func { .. } => {
+                TypeCategory::Reference
+            }
+            Ty::Nullable(_) | Ty::Null => TypeCategory::Nullable,
+            Ty::Ptr(_) => TypeCategory::Pointer,
+            Ty::Dyn => TypeCategory::Dynamic,
+            Ty::TypeParam(_) => TypeCategory::TypeParameter,
+            Ty::Error => TypeCategory::Error,
+        }
+    }
+
     pub fn is_nullable(&self) -> bool {
-        matches!(self, Ty::Nullable(_) | Ty::Null | Ty::Dyn | Ty::String | Ty::Named(_) | Ty::Generic { .. } | Ty::Array { .. } | Ty::Ptr(_) | Ty::Error)
+        matches!(
+            self.category(),
+            TypeCategory::Reference
+                | TypeCategory::Nullable
+                | TypeCategory::Pointer
+                | TypeCategory::Dynamic
+                | TypeCategory::Error
+        )
     }
 
     pub fn unwrap_nullable(&self) -> &Ty {

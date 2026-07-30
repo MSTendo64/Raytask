@@ -59,7 +59,7 @@ raytask bind mylib.h --lib mylib.dll                  # C header → FFI decls (
 raytask run main.rt
 raytask run main.rt --no-stdlib                      # run source without bstd or builtin globals
 raytask build main.rt                              # → .rtbc
-raytask build main.rt --target native              # → .c (+ gcc/clang), async+GC runtime
+raytask build main.rt --target native              # → .c (+ vendored TCC first, then gcc/clang/cl fallback)
 raytask build main.rt --target app --platform current
 raytask build main.rt --target wasm
 raytask build main.rt --target web
@@ -70,6 +70,8 @@ raytask build main.rt --target native-bin --platform windows
 raytask build main.rt --target efi
 raytask build main.rt --target raw
 raytask link main.rtbc --platform linux -o app.elf
+raytask tcc examples/tcc/hello.c -o hello.exe
+raytask tcc -run examples/tcc/hello.c -- demo
 raytask dap                                          # Debug Adapter Protocol (stdio)
 raytask install SomeLib
 raytask search http
@@ -91,6 +93,14 @@ raytask doc
 | `wasm` / `web` | WASM/HTML bundle (+ bytecode payload for web) |
 | `mobile` | Android / iOS scaffolds |
 | `embedded` / `kernel` | freestanding C (+ ISR / MMIO attributes) |
+
+### Vendored TCC
+
+The repository now vendors TinyCC under `tcc/` and builds `libtcc` as part of the normal Cargo build.
+
+- `raytask build ... --target native` now tries the embedded TCC backend first, then falls back to host `gcc` / `clang` / `cl` when needed.
+- `raytask tcc ...` exposes the bundled compiler directly for C files, object files, shared libraries, and `-run` workflows.
+- The bundled runtime headers and support files are resolved from the vendored `tcc/` tree, so no external GCC toolchain is required for the TCC path.
 
 Remote registry: set `RAYTASK_REGISTRY_URL` (`index.json` + packages).
 

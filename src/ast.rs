@@ -107,6 +107,7 @@ pub enum Member {
 #[derive(Debug, Clone)]
 pub struct FieldDecl {
     pub access: Access,
+    pub is_static: bool,
     pub is_const: bool,
     pub ty: Option<TypeRef>,
     pub name: String,
@@ -131,6 +132,7 @@ pub struct DestructorDecl {
 #[derive(Debug, Clone)]
 pub struct PropertyDecl {
     pub access: Access,
+    pub is_static: bool,
     pub name: String,
     pub ty: TypeRef,
     pub getter: Option<Block>,
@@ -162,6 +164,7 @@ pub struct FunctionDecl {
     pub access: Access,
     pub is_async: bool,
     pub is_unsafe: bool,
+    pub is_static: bool,
     pub is_virtual: bool,
     pub is_override: bool,
     pub is_abstract: bool,

@@ -563,42 +563,40 @@ fn call_int(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
 
     let _ = func.abi;
 
-    let raw: u64 = unsafe {
-        match n {
-            0 => {
-                let f = get_sym!(unsafe extern "C" fn() -> u64);
-                f()
-            }
-            1 => {
-                let f = get_sym!(unsafe extern "C" fn(u64) -> u64);
-                f(a[0])
-            }
-            2 => {
-                let f = get_sym!(unsafe extern "C" fn(u64, u64) -> u64);
-                f(a[0], a[1])
-            }
-            3 => {
-                let f = get_sym!(unsafe extern "C" fn(u64, u64, u64) -> u64);
-                f(a[0], a[1], a[2])
-            }
-            4 => {
-                let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64) -> u64);
-                f(a[0], a[1], a[2], a[3])
-            }
-            5 => {
-                let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64);
-                f(a[0], a[1], a[2], a[3], a[4])
-            }
-            6 => {
-                let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64);
-                f(a[0], a[1], a[2], a[3], a[4], a[5])
-            }
-            _ => {
-                return Err(RuntimeError::Message(format!(
-                    "FFI '{}': at most 6 integer/pointer arguments supported",
-                    func.name
-                )));
-            }
+    let raw: u64 = match n {
+        0 => {
+            let f = get_sym!(unsafe extern "C" fn() -> u64);
+            unsafe { f() }
+        }
+        1 => {
+            let f = get_sym!(unsafe extern "C" fn(u64) -> u64);
+            unsafe { f(a[0]) }
+        }
+        2 => {
+            let f = get_sym!(unsafe extern "C" fn(u64, u64) -> u64);
+            unsafe { f(a[0], a[1]) }
+        }
+        3 => {
+            let f = get_sym!(unsafe extern "C" fn(u64, u64, u64) -> u64);
+            unsafe { f(a[0], a[1], a[2]) }
+        }
+        4 => {
+            let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64) -> u64);
+            unsafe { f(a[0], a[1], a[2], a[3]) }
+        }
+        5 => {
+            let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64);
+            unsafe { f(a[0], a[1], a[2], a[3], a[4]) }
+        }
+        6 => {
+            let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64);
+            unsafe { f(a[0], a[1], a[2], a[3], a[4], a[5]) }
+        }
+        _ => {
+            return Err(RuntimeError::Message(format!(
+                "FFI '{}': at most 6 integer/pointer arguments supported",
+                func.name
+            )));
         }
     };
 

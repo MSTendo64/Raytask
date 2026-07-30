@@ -5,8 +5,10 @@
 //! sites to the mangled specialized names.
 
 use crate::ast::*;
-use crate::span::Span;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+#[cfg(test)]
+use crate::span::Span;
 
 /// Stdlib / builtin generics stay erased at runtime — do not specialize.
 fn is_builtin_generic(name: &str) -> bool {
@@ -109,6 +111,7 @@ struct Mono {
     specialized_structs: HashMap<String, StructDecl>,
     queue: VecDeque<(Kind, String, Vec<TypeRef>)>,
     done: HashSet<String>,
+    enqueued: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +132,7 @@ impl Mono {
             specialized_structs: HashMap::new(),
             queue: VecDeque::new(),
             done: HashSet::new(),
+            enqueued: HashSet::new(),
         }
     }
 
@@ -229,8 +233,22 @@ impl Mono {
         if !exists {
             return;
         }
+        let key = format!("{}::{}", name, mangle_instance(name, args));
+        if !self.enqueued.insert(key) {
+            return;
+        }
         self.queue
             .push_back((kind, name.to_string(), args.to_vec()));
+    }
+
+    fn collect_type_ref(&mut self, ty: &TypeRef) {
+        if !ty.args.is_empty() {
+            self.request(Kind::Class, &ty.name, &ty.args);
+            self.request(Kind::Struct, &ty.name, &ty.args);
+        }
+        for arg in &ty.args {
+            self.collect_type_ref(arg);
+        }
     }
 
     fn specialize_fn(&mut self, name: &str, args: &[TypeRef]) {
@@ -316,6 +334,10 @@ impl Mono {
     }
 
     fn collect_fn_body(&mut self, f: &FunctionDecl) {
+        self.collect_type_ref(&f.return_type);
+        for p in &f.params {
+            self.collect_type_ref(&p.ty);
+        }
         if let Some(body) = &f.body {
             match body {
                 FunctionBody::Block(b) => self.collect_block(b),
@@ -330,6 +352,9 @@ impl Mono {
     }
 
     fn collect_class(&mut self, c: &ClassDecl) {
+        for base in &c.bases {
+            self.collect_type_ref(base);
+        }
         for m in &c.members {
             self.collect_member(m);
         }
@@ -344,12 +369,18 @@ impl Mono {
     fn collect_member(&mut self, m: &Member) {
         match m {
             Member::Field(f) => {
+                if let Some(ty) = &f.ty {
+                    self.collect_type_ref(ty);
+                }
                 if let Some(i) = &f.init {
                     self.collect_expr(i);
                 }
             }
             Member::Method(f) => self.collect_fn_body(f),
             Member::Constructor(ctor) => {
+                for p in &ctor.params {
+                    self.collect_type_ref(&p.ty);
+                }
                 self.collect_block(&ctor.body);
                 for a in &ctor.base_args {
                     self.collect_expr(a);
@@ -357,6 +388,7 @@ impl Mono {
             }
             Member::Destructor(d) => self.collect_block(&d.body),
             Member::Property(p) => {
+                self.collect_type_ref(&p.ty);
                 if let Some(g) = &p.getter {
                     self.collect_block(g);
                 }
@@ -365,6 +397,10 @@ impl Mono {
                 }
             }
             Member::Indexer(i) => {
+                self.collect_type_ref(&i.ty);
+                for p in &i.params {
+                    self.collect_type_ref(&p.ty);
+                }
                 if let Some(g) = &i.getter {
                     self.collect_block(g);
                 }
@@ -372,7 +408,13 @@ impl Mono {
                     self.collect_block(s);
                 }
             }
-            Member::Operator(o) => self.collect_block(&o.body),
+            Member::Operator(o) => {
+                self.collect_type_ref(&o.return_type);
+                for p in &o.params {
+                    self.collect_type_ref(&p.ty);
+                }
+                self.collect_block(&o.body)
+            }
         }
     }
 
@@ -387,17 +429,26 @@ impl Mono {
             Stmt::Expr(e) | Stmt::Return(Some(e), _) | Stmt::Throw(e, _) => self.collect_expr(e),
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Decl(d) => {
+                if let Some(ty) = &d.ty {
+                    self.collect_type_ref(ty);
+                }
                 if let Some(i) = &d.init {
                     self.collect_expr(i);
                 }
             }
             Stmt::Using { decl, body, .. } => {
+                if let Some(ty) = &decl.ty {
+                    self.collect_type_ref(ty);
+                }
                 if let Some(i) = &decl.init {
                     self.collect_expr(i);
                 }
                 self.collect_block(body);
             }
-            Stmt::Const(c) => self.collect_expr(&c.value),
+            Stmt::Const(c) => {
+                self.collect_type_ref(&c.ty);
+                self.collect_expr(&c.value)
+            }
             Stmt::Block(b) | Stmt::Unsafe(b, _) => self.collect_block(b),
             Stmt::If {
                 cond,
@@ -500,10 +551,7 @@ impl Mono {
                 }
             }
             Expr::New { ty, args, init, .. } => {
-                if !ty.args.is_empty() {
-                    self.request(Kind::Class, &ty.name, &ty.args);
-                    self.request(Kind::Struct, &ty.name, &ty.args);
-                }
+                self.collect_type_ref(ty);
                 for a in args {
                     self.collect_expr(&a.value);
                 }
@@ -565,13 +613,32 @@ impl Mono {
                 }
             }
             Expr::TypeOf(ty, _) => {
-                if !ty.args.is_empty() {
-                    self.request(Kind::Class, &ty.name, &ty.args);
-                    self.request(Kind::Struct, &ty.name, &ty.args);
-                }
+                self.collect_type_ref(ty);
             }
             _ => {}
         }
+    }
+
+    fn rewrite_type_ref(&self, mut ty: TypeRef) -> TypeRef {
+        ty.args = ty
+            .args
+            .into_iter()
+            .map(|arg| self.rewrite_type_ref(arg))
+            .collect();
+        if !ty.args.is_empty()
+            && (self.class_templates.contains_key(&ty.name)
+                || self.struct_templates.contains_key(&ty.name)
+                || self
+                    .specialized_classes
+                    .contains_key(&mangle_instance(&ty.name, &ty.args))
+                || self
+                    .specialized_structs
+                    .contains_key(&mangle_instance(&ty.name, &ty.args)))
+        {
+            ty.name = mangle_instance(&ty.name, &ty.args);
+            ty.args.clear();
+        }
+        ty
     }
 
     fn rewrite_item(&self, item: Item) -> Item {
@@ -588,12 +655,21 @@ impl Mono {
                 Item::Namespace(ns)
             }
             Item::Function(mut f) => {
+                f.return_type = self.rewrite_type_ref(f.return_type);
+                for p in &mut f.params {
+                    p.ty = self.rewrite_type_ref(p.ty.clone());
+                }
                 if let Some(body) = f.body.take() {
                     f.body = Some(self.rewrite_fn_body(body));
                 }
                 Item::Function(f)
             }
             Item::Class(mut c) => {
+                c.bases = c
+                    .bases
+                    .into_iter()
+                    .map(|b| self.rewrite_type_ref(b))
+                    .collect();
                 c.members = c
                     .members
                     .into_iter()
@@ -610,6 +686,7 @@ impl Mono {
                 Item::Struct(s)
             }
             Item::Const(mut c) => {
+                c.ty = self.rewrite_type_ref(c.ty);
                 c.value = self.rewrite_expr(c.value);
                 Item::Const(c)
             }
@@ -620,12 +697,19 @@ impl Mono {
     fn rewrite_member(&self, m: Member) -> Member {
         match m {
             Member::Method(mut f) => {
+                f.return_type = self.rewrite_type_ref(f.return_type);
+                for p in &mut f.params {
+                    p.ty = self.rewrite_type_ref(p.ty.clone());
+                }
                 if let Some(body) = f.body.take() {
                     f.body = Some(self.rewrite_fn_body(body));
                 }
                 Member::Method(f)
             }
             Member::Constructor(mut ctor) => {
+                for p in &mut ctor.params {
+                    p.ty = self.rewrite_type_ref(p.ty.clone());
+                }
                 ctor.body = self.rewrite_block(ctor.body);
                 ctor.base_args = ctor
                     .base_args
@@ -639,6 +723,7 @@ impl Mono {
                 Member::Destructor(d)
             }
             Member::Property(mut p) => {
+                p.ty = self.rewrite_type_ref(p.ty);
                 if let Some(g) = p.getter.take() {
                     p.getter = Some(self.rewrite_block(g));
                 }
@@ -648,6 +733,10 @@ impl Mono {
                 Member::Property(p)
             }
             Member::Indexer(mut i) => {
+                i.ty = self.rewrite_type_ref(i.ty);
+                for p in &mut i.params {
+                    p.ty = self.rewrite_type_ref(p.ty.clone());
+                }
                 if let Some(g) = i.getter.take() {
                     i.getter = Some(self.rewrite_block(g));
                 }
@@ -657,10 +746,17 @@ impl Mono {
                 Member::Indexer(i)
             }
             Member::Operator(mut o) => {
+                o.return_type = self.rewrite_type_ref(o.return_type);
+                for p in &mut o.params {
+                    p.ty = self.rewrite_type_ref(p.ty.clone());
+                }
                 o.body = self.rewrite_block(o.body);
                 Member::Operator(o)
             }
             Member::Field(mut f) => {
+                if let Some(ty) = f.ty.take() {
+                    f.ty = Some(self.rewrite_type_ref(ty));
+                }
                 if let Some(i) = f.init.take() {
                     f.init = Some(self.rewrite_expr(i));
                 }
@@ -690,12 +786,16 @@ impl Mono {
             Stmt::Expr(e) => Stmt::Expr(self.rewrite_expr(e)),
             Stmt::Return(Some(e), s) => Stmt::Return(Some(self.rewrite_expr(e)), s),
             Stmt::Decl(mut d) => {
+                if let Some(ty) = d.ty.take() {
+                    d.ty = Some(self.rewrite_type_ref(ty));
+                }
                 if let Some(i) = d.init.take() {
                     d.init = Some(self.rewrite_expr(i));
                 }
                 Stmt::Decl(d)
             }
             Stmt::Const(mut c) => {
+                c.ty = self.rewrite_type_ref(c.ty);
                 c.value = self.rewrite_expr(c.value);
                 Stmt::Const(c)
             }
@@ -769,6 +869,9 @@ impl Mono {
                 span,
             },
             Stmt::Using { mut decl, body, span } => {
+                if let Some(ty) = decl.ty.take() {
+                    decl.ty = Some(self.rewrite_type_ref(ty));
+                }
                 if let Some(i) = decl.init.take() {
                     decl.init = Some(self.rewrite_expr(i));
                 }
@@ -857,20 +960,7 @@ impl Mono {
                 init,
                 span,
             } => {
-                if !ty.args.is_empty()
-                    && (self.class_templates.contains_key(&ty.name)
-                        || self.struct_templates.contains_key(&ty.name)
-                        || self
-                            .specialized_classes
-                            .contains_key(&mangle_instance(&ty.name, &ty.args))
-                        || self
-                            .specialized_structs
-                            .contains_key(&mangle_instance(&ty.name, &ty.args)))
-                {
-                    let mangled = mangle_instance(&ty.name, &ty.args);
-                    ty.name = mangled;
-                    ty.args.clear();
-                }
+                ty = self.rewrite_type_ref(ty);
                 Expr::New {
                     ty,
                     args: args
@@ -958,18 +1048,18 @@ impl Mono {
                 span,
             },
             Expr::Cast { ty, expr, span } => Expr::Cast {
-                ty,
+                ty: self.rewrite_type_ref(ty),
                 expr: Box::new(self.rewrite_expr(*expr)),
                 span,
             },
             Expr::Is { expr, ty, span } => Expr::Is {
                 expr: Box::new(self.rewrite_expr(*expr)),
-                ty,
+                ty: self.rewrite_type_ref(ty),
                 span,
             },
             Expr::As { expr, ty, span } => Expr::As {
                 expr: Box::new(self.rewrite_expr(*expr)),
-                ty,
+                ty: self.rewrite_type_ref(ty),
                 span,
             },
             Expr::Await(e, s) => Expr::Await(Box::new(self.rewrite_expr(*e)), s),
@@ -1012,6 +1102,7 @@ fn subst_member(m: &Member, map: &HashMap<String, TypeRef>) -> Member {
     match m {
         Member::Field(f) => Member::Field(FieldDecl {
             access: f.access.clone(),
+            is_static: f.is_static,
             is_const: f.is_const,
             ty: f.ty.as_ref().map(|t| subst_type(t, map)),
             name: f.name.clone(),
@@ -1056,6 +1147,7 @@ fn subst_member(m: &Member, map: &HashMap<String, TypeRef>) -> Member {
         }),
         Member::Property(p) => Member::Property(PropertyDecl {
             access: p.access.clone(),
+            is_static: p.is_static,
             name: p.name.clone(),
             ty: subst_type(&p.ty, map),
             getter: p.getter.as_ref().map(|g| subst_block(g, map)),

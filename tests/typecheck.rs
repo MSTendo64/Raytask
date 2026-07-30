@@ -63,3 +63,31 @@ fn dyn_escapes_checking() {
     let report = check_source(src).unwrap();
     assert!(report.ok(), "{}", report.format_all());
 }
+
+#[test]
+fn class_reference_can_accept_null_but_struct_cannot() {
+    let ok_src = r#"
+        class Person {
+        }
+
+        void Main() {
+            Person p = null;
+            assert(IsNull(p));
+        }
+    "#;
+    let ok = check_source(ok_src).unwrap();
+    assert!(ok.ok(), "{}", ok.format_all());
+
+    let bad_src = r#"
+        struct Point {
+            int X;
+        }
+
+        void Main() {
+            Point p = null;
+        }
+    "#;
+    let bad = check_source(bad_src).unwrap();
+    assert!(!bad.ok(), "expected struct-nullability failure");
+    assert!(bad.format_all().contains("type mismatch"));
+}

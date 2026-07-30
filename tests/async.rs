@@ -69,3 +69,29 @@ fn concurrent_delays_faster_than_sum() {
     "#;
     run_source(src).unwrap();
 }
+
+#[test]
+fn task_group_cancel_wakes_waiters() {
+    let src = r#"
+        async int Slow() {
+            await Task.Delay(200);
+            return 1;
+        }
+
+        async void Main() {
+            var g = TaskGroup.New();
+            g.Run(Slow);
+            var all = g.WhenAll();
+            g.Cancel();
+            try {
+                await all;
+                assert(false);
+            } catch (e) {
+                assert(true);
+            }
+        }
+    "#;
+    let report = check_source(src).unwrap();
+    assert!(report.ok(), "{}", report.format_all());
+    run_source(src).unwrap();
+}

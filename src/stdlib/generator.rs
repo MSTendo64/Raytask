@@ -34,19 +34,6 @@ fn make_gen(items: Vec<Value>) -> Value {
     })
 }
 
-fn gen_obj(args: &[Value]) -> Option<&crate::gc::GcObject> {
-    for v in args {
-        if let Value::Object(o) = v {
-            if o.borrow().class_name == "Generator" {
-                // We return a raw ref for a borrow-friendly API
-                // SAFETY: we only call during the native call, arg lives on the stack
-                return Some(unsafe { &*(&**o as *const _) });
-            }
-        }
-    }
-    None
-}
-
 fn gen_rc(args: &[Value]) -> Option<std::rc::Rc<crate::gc::GcObject>> {
     for v in args {
         if let Value::Object(o) = v {

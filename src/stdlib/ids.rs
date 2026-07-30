@@ -197,10 +197,23 @@ pub const WEB_PARSE_JSON: usize = 749;
 pub const TASK_DELAY: usize = 800;
 pub const TASK_RUN: usize = 801;
 pub const TASK_WHEN_ALL: usize = 802;
+pub const TASK_WHEN_ANY: usize = 803;
+pub const TASKGROUP_NEW: usize = 804;
+pub const TASKGROUP_RUN: usize = 805;
+pub const TASKGROUP_CANCEL: usize = 806;
+pub const TASKGROUP_WHEN_ALL: usize = 807;
+pub const TASKGROUP_WHEN_ANY: usize = 808;
+pub const CTS_NEW: usize = 809;
 
 // ---- GC ----
-pub const GC_COLLECT: usize = 810;
-pub const GC_STATS: usize = 811;
+pub const GC_COLLECT: usize = 820;
+pub const GC_STATS: usize = 821;
+
+// ---- Cancellation ----
+pub const CTS_CANCEL: usize = 830;
+pub const CTS_TOKEN: usize = 831;
+pub const TOKEN_IS_CANCELLED: usize = 832;
+pub const TOKEN_THROW_IF_CANCELLED: usize = 833;
 
 // ---- Logger ----
 pub const LOG_INFO: usize = 850;

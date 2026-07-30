@@ -70,5 +70,6 @@ Reload the window after install.
 ## Notes
 
 - Rebuild/reinstall the CLI after pulling debugger changes (`cargo install --path .`).
+- Diagnostics for unsaved files use a shadow copy next to the source file so relative imports and project-local modules keep resolving correctly.
 - RTBC format is **v7** (includes local debug ranges). Apps built with older stubs need a rebuild.
 - Multi-file imports share line numbers today unless chunks carry `source`; the launch file path is stamped on all chunks in a DAP session.

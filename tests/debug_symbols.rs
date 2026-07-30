@@ -1,6 +1,7 @@
 use raytask::bytecode_format::{deserialize_module, serialize_module};
 use raytask::compiler::Compiler;
 use raytask::debug_symbols::{self, DebugSymbols};
+use raytask::inspect_bytecode;
 use raytask::resolve::resolve_program;
 use std::path::Path;
 
@@ -48,4 +49,21 @@ void Main() {
     assert_eq!(main.source.as_deref(), Some("demo.rt"));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn inspect_rtbc_prints_human_readable_summary() {
+    let src = r#"
+void Main() {
+    print("hi");
+}
+"#;
+    let program = resolve_program(src, None).unwrap();
+    let module = Compiler::new().with_source("demo.rt").compile(&program).unwrap();
+    let bytes = serialize_module(&module);
+    let text = inspect_bytecode(&bytes, true).unwrap();
+    assert!(text.contains("RTBC"));
+    assert!(text.contains("chunks:"));
+    assert!(text.contains("Main"));
+    assert!(text.contains("code:"));
 }

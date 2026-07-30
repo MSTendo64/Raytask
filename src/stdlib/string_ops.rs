@@ -2,8 +2,6 @@
 
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::value::Value;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 fn recv_str(args: &[Value]) -> RuntimeResult<String> {
     match args.first() {

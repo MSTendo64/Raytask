@@ -214,7 +214,7 @@ fn fields_to_unix_ms(year: i64, month: i64, day: i64, h: i64, mi: i64, s: i64) -
         days += months[(m - 1) as usize];
     }
     days += day - 1;
-    ((days * 86400 + h * 3600 + mi * 60 + s) * 1000)
+    (days * 86400 + h * 3600 + mi * 60 + s) * 1000
 }
 
 pub fn dt_add_span(args: &[Value]) -> RuntimeResult<Value> {

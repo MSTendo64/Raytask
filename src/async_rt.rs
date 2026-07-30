@@ -13,6 +13,7 @@ pub struct TaskInner {
     pub state: TaskState,
     /// Coroutine ids waiting on this task.
     pub waiters: Vec<usize>,
+    pub cancel_token: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,9 +25,14 @@ pub enum TaskState {
 
 impl TaskInner {
     pub fn new_pending() -> TaskHandle {
+        Self::new_pending_with_token(None)
+    }
+
+    pub fn new_pending_with_token(cancel_token: Option<Value>) -> TaskHandle {
         Rc::new(RefCell::new(TaskInner {
             state: TaskState::Pending,
             waiters: Vec::new(),
+            cancel_token,
         }))
     }
 
@@ -34,6 +40,7 @@ impl TaskInner {
         Rc::new(RefCell::new(TaskInner {
             state: TaskState::Ready(value),
             waiters: Vec::new(),
+            cancel_token: None,
         }))
     }
 
@@ -67,6 +74,22 @@ pub fn fail_task(task: &TaskHandle, err: String) -> Vec<usize> {
         std::mem::take(&mut inner.waiters)
     } else {
         Vec::new()
+    }
+}
+
+pub fn cancel_task(task: &TaskHandle) -> Vec<usize> {
+    fail_task(task, "operation cancelled".into())
+}
+
+pub fn token_is_cancelled(token: &Value) -> bool {
+    match token {
+        Value::Object(o) => o
+            .borrow()
+            .fields
+            .get("isCancelled")
+            .map(|v| v.is_truthy())
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -107,11 +130,12 @@ impl TimerQueue {
     /// Fire all timers that are due; returns completed task handles' waiters lists flattened.
     pub fn fire_due(&mut self, now: Instant) -> Vec<(TaskHandle, Vec<usize>)> {
         let mut fired = Vec::new();
-        while let Some(front) = self.entries.first() {
-            if front.when > now {
-                break;
-            }
-            let entry = self.entries.remove(0);
+        let due = self
+            .entries
+            .iter()
+            .take_while(|entry| entry.when <= now)
+            .count();
+        for entry in self.entries.drain(..due) {
             let waiters = complete_task(&entry.task, Value::Null);
             fired.push((entry.task, waiters));
         }

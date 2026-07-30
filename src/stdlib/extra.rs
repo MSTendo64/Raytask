@@ -162,17 +162,6 @@ pub fn str_is_whitespace(args: &[Value]) -> RuntimeResult<Value> {
     }))
 }
 
-pub fn str_join(args: &[Value]) -> RuntimeResult<Value> {
-    let args = skip_module(args);
-    // String.Join(sep, list)
-    let sep = get_str(&args[0]);
-    let list = match &args[1] {
-        Value::Array(a) => a.borrow().iter().map(|v| get_str(v)).collect::<Vec<_>>(),
-        _ => return Ok(mk_str(String::new())),
-    };
-    Ok(mk_str(list.join(&sep)))
-}
-
 pub fn str_format(args: &[Value]) -> RuntimeResult<Value> {
     let args = skip_module(args);
     // String.Format("{0} and {1}", a, b)

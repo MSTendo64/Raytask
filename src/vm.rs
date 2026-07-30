@@ -1,7 +1,8 @@
 //! Bytecode virtual machine with async/await event-loop.
 
 use crate::async_rt::{
-    add_waiter, complete_task, fail_task, ReadyQueue, TaskHandle, TaskInner, TimerQueue,
+    add_waiter, cancel_task, complete_task, fail_task, token_is_cancelled, ReadyQueue, TaskHandle,
+    TaskInner, TimerQueue,
 };
 use crate::bytecode::{Module, Op};
 use crate::error::{RuntimeError, RuntimeResult};
@@ -39,9 +40,10 @@ struct ParkedCo {
 }
 
 /// Aggregated WhenAll join.
-struct JoinAll {
+struct JoinGroup {
     outer: TaskHandle,
     tasks: Vec<TaskHandle>,
+    any: bool,
 }
 
 enum StepCtrl {
@@ -64,7 +66,8 @@ pub struct Vm {
     parked: HashMap<usize, ParkedCo>,
     ready: ReadyQueue,
     timers: TimerQueue,
-    joins: Vec<JoinAll>,
+    joins: Vec<JoinGroup>,
+    token_tasks: HashMap<usize, Vec<TaskHandle>>,
     next_co_id: usize,
     /// >0 while running nested sync invoke (LINQ etc.) — await not allowed.
     sync_depth: usize,
@@ -121,6 +124,7 @@ impl Vm {
             ready: ReadyQueue::new(),
             timers: TimerQueue::new(),
             joins: Vec::new(),
+            token_tasks: HashMap::new(),
             next_co_id: 1,
             sync_depth: 0,
             root_done: None,
@@ -316,7 +320,11 @@ impl Vm {
 
     fn finish_coroutine(&mut self, result: Value) -> RuntimeResult<StepCtrl> {
         if let Some(task) = self.co_task.take() {
-            let waiters = complete_task(&task, result);
+            let waiters = if self.task_is_cancelled(&task) {
+                cancel_task(&task)
+            } else {
+                complete_task(&task, result)
+            };
             for w in waiters {
                 self.ready.push(w);
             }
@@ -343,7 +351,13 @@ impl Vm {
     fn fire_timers(&mut self) {
         let now = Instant::now();
         let fired = self.timers.fire_due(now);
-        for (_task, waiters) in fired {
+        for (task, waiters) in fired {
+            if self.task_is_cancelled(&task) {
+                let cancelled = cancel_task(&task);
+                for w in cancelled {
+                    self.ready.push(w);
+                }
+            }
             for w in waiters {
                 self.ready.push(w);
             }
@@ -354,7 +368,20 @@ impl Vm {
         let mut still = Vec::new();
         for join in self.joins.drain(..) {
             let all_ready = join.tasks.iter().all(|t| t.borrow().is_ready());
-            if all_ready {
+            let first_ready = join.tasks.iter().find_map(|t| t.borrow().result());
+            if join.any {
+                if let Some(result) = first_ready {
+                    let waiters = match result {
+                        Ok(v) => complete_task(&join.outer, v),
+                        Err(e) => fail_task(&join.outer, e),
+                    };
+                    for w in waiters {
+                        self.ready.push(w);
+                    }
+                } else {
+                    still.push(join);
+                }
+            } else if all_ready {
                 let mut results = Vec::with_capacity(join.tasks.len());
                 let mut err: Option<String> = None;
                 for t in &join.tasks {
@@ -383,6 +410,158 @@ impl Vm {
             }
         }
         self.joins = still;
+    }
+
+    fn task_is_cancelled(&self, task: &TaskHandle) -> bool {
+        task.borrow()
+            .cancel_token
+            .as_ref()
+            .map(token_is_cancelled)
+            .unwrap_or(false)
+    }
+
+    fn token_object(cancelled: bool) -> Value {
+        crate::gc::alloc_object(ObjectInstance {
+            class_name: "CancellationToken".into(),
+            fields: HashMap::from([("isCancelled".into(), Value::Bool(cancelled))]),
+            class_index: None,
+            finalized: false,
+        })
+    }
+
+    fn token_source_object() -> Value {
+        crate::gc::alloc_object(ObjectInstance {
+            class_name: "CancellationTokenSource".into(),
+            fields: HashMap::from([("token".into(), Self::token_object(false))]),
+            class_index: None,
+            finalized: false,
+        })
+    }
+
+    fn group_tasks(group: &Value) -> Vec<TaskHandle> {
+        let Value::Object(o) = group else {
+            return Vec::new();
+        };
+        let tasks = o
+            .borrow()
+            .fields
+            .get("tasks")
+            .cloned()
+            .unwrap_or_else(|| crate::gc::alloc_array(Vec::new()));
+        match tasks {
+            Value::Array(a) => a
+                .borrow()
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Task(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn group_token(group: &Value) -> Option<Value> {
+        let Value::Object(o) = group else {
+            return None;
+        };
+        o.borrow().fields.get("token").cloned()
+    }
+
+    fn token_key(token: &Value) -> Option<usize> {
+        match token {
+            Value::Object(o) => Some(Rc::as_ptr(o) as usize),
+            _ => None,
+        }
+    }
+
+    fn register_task_token(&mut self, task: &TaskHandle, token: Option<&Value>) {
+        let Some(key) = token.and_then(Self::token_key) else {
+            return;
+        };
+        self.token_tasks.entry(key).or_default().push(task.clone());
+    }
+
+    fn cancel_registered_token_tasks(&mut self, token: &Value) {
+        let Some(key) = Self::token_key(token) else {
+            return;
+        };
+        let Some(tasks) = self.token_tasks.get(&key).cloned() else {
+            return;
+        };
+        for task in tasks {
+            let waiters = cancel_task(&task);
+            for w in waiters {
+                self.ready.push(w);
+            }
+        }
+        self.poll_joins();
+    }
+
+    fn push_group_task(group: &Value, task: Value) {
+        let Value::Object(o) = group else {
+            return;
+        };
+        let guard = o.borrow_mut();
+        let Some(Value::Array(tasks)) = guard.fields.get("tasks").cloned() else {
+            return;
+        };
+        tasks.borrow_mut().push(task);
+    }
+
+    fn cancel_group_tasks(&mut self, group: &Value) {
+        for task in Self::group_tasks(group) {
+            let waiters = cancel_task(&task);
+            for w in waiters {
+                self.ready.push(w);
+            }
+        }
+    }
+
+    fn create_join_task(
+        &mut self,
+        args: &[Value],
+        any: bool,
+        cancel_token: Option<Value>,
+    ) -> RuntimeResult<Value> {
+        let list = args
+            .iter()
+            .find_map(|v| match v {
+                Value::Array(a) => Some(a.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                RuntimeError::Message(if any {
+                    "Task.WhenAny requires an array of Tasks".into()
+                } else {
+                    "Task.WhenAll requires an array of Tasks".into()
+                })
+            })?;
+        let items: Vec<Value> = list.borrow().clone();
+        let mut tasks = Vec::new();
+        for v in items {
+            match v {
+                Value::Task(t) => tasks.push(t),
+                other => tasks.push(TaskInner::new_ready(other)),
+            }
+        }
+        let outer = TaskInner::new_pending_with_token(cancel_token.clone());
+        self.register_task_token(&outer, cancel_token.as_ref());
+        if tasks.is_empty() {
+            let _ = if any {
+                complete_task(&outer, Value::Null)
+            } else {
+                complete_task(&outer, crate::gc::alloc_array(Vec::new()))
+            };
+            return Ok(Value::Task(outer));
+        }
+        self.joins.push(JoinGroup {
+            outer: outer.clone(),
+            tasks,
+            any,
+        });
+        self.poll_joins();
+        Ok(Value::Task(outer))
     }
 
     fn park_await(&mut self, task: TaskHandle) {
@@ -613,6 +792,7 @@ impl Vm {
                         // Extension / Type.method globals: string.Foo, Class.Foo
                         let type_name = match &obj {
                             Value::Object(o) => o.borrow().class_name.clone(),
+                            Value::TypeModule(module) => module.to_string(),
                             Value::String(_) => "string".into(),
                             Value::Array(_) => "List".into(),
                             Value::Int(_) => "int".into(),
@@ -621,6 +801,49 @@ impl Vm {
                             other => other.type_name().to_string(),
                         };
                         let key = format!("{}.{}", type_name, name);
+                        if let Value::TypeModule(module) = &obj {
+                            if let Some(class) = self.module.classes.iter().find(|c| c.name == **module) {
+                                let getter_name = format!("get_{}", name);
+                                if let Some((_, chunk_index)) = class
+                                    .methods
+                                    .iter()
+                                    .find(|(method, _)| method.as_str() == getter_name)
+                                {
+                                    let chunk = &self.module.chunks[*chunk_index];
+                                    let result = self.invoke_function(
+                                        &FunctionRef {
+                                            name: format!("{}.{}", type_name, getter_name),
+                                            chunk_index: *chunk_index,
+                                            arity: chunk.arity,
+                                            defaults: vec![],
+                                            is_async: chunk.is_async,
+                                            upvalues: vec![],
+                                        },
+                                        &[],
+                                    )?;
+                                    self.push(result);
+                                    return Ok(StepCtrl::Continue);
+                                }
+                            }
+                        }
+                        if let Some(class) = self.module.classes.iter().find(|c| c.name == type_name) {
+                            if let Some((_, chunk_index)) = class
+                                .methods
+                                .iter()
+                                .find(|(method, _)| method.as_str() == name)
+                            {
+                                let chunk = &self.module.chunks[*chunk_index];
+                                self.push(Value::Function(FunctionRef {
+                                    name: key,
+                                    chunk_index: *chunk_index,
+                                    arity: chunk.arity,
+                                    defaults: vec![],
+                                    is_async: chunk.is_async,
+                                    upvalues: vec![],
+                                }));
+                                return Ok(StepCtrl::Continue);
+                            }
+                        }
                         if let Some(idx) = self.module.globals.iter().position(|g| g == &key) {
                             let v = self.globals.get(idx).cloned().unwrap_or(Value::Null);
                             self.push(v);
@@ -648,6 +871,40 @@ impl Vm {
                     let _ = self.invoke_function(&f, &[obj, value.clone()])?;
                     self.push(value);
                     return Ok(StepCtrl::Continue);
+                }
+                if let Value::TypeModule(module) = &obj {
+                    if let Some(class) = self.module.classes.iter().find(|c| c.name == **module) {
+                        let setter_name = format!("set_{}", name);
+                        if let Some((_, chunk_index)) = class
+                            .methods
+                            .iter()
+                            .find(|(method, _)| method.as_str() == setter_name)
+                        {
+                            let chunk = &self.module.chunks[*chunk_index];
+                            let _ = self.invoke_function(
+                                &FunctionRef {
+                                    name: format!("{}.{}", module, setter_name),
+                                    chunk_index: *chunk_index,
+                                    arity: chunk.arity,
+                                    defaults: vec![],
+                                    is_async: chunk.is_async,
+                                    upvalues: vec![],
+                                },
+                                &[value.clone()],
+                            )?;
+                            self.push(value);
+                            return Ok(StepCtrl::Continue);
+                        }
+                    }
+                    let global_key = format!("{}.{}", module, name);
+                    if let Some(idx) = self.module.globals.iter().position(|g| g == &global_key) {
+                        if idx >= self.globals.len() {
+                            self.globals.resize(idx + 1, Value::Null);
+                        }
+                        self.globals[idx] = value.clone();
+                        self.push(value);
+                        return Ok(StepCtrl::Continue);
+                    }
                 }
                 let mut obj = obj;
                 set_property(&mut obj, &name, value.clone())?;
@@ -1058,6 +1315,15 @@ impl Vm {
                         | crate::stdlib::ids::TASK_RUN
                         | crate::stdlib::ids::TASK_DELAY
                         | crate::stdlib::ids::TASK_WHEN_ALL
+                        | crate::stdlib::ids::TASK_WHEN_ANY
+                        | crate::stdlib::ids::TASKGROUP_NEW
+                        | crate::stdlib::ids::TASKGROUP_RUN
+                        | crate::stdlib::ids::TASKGROUP_CANCEL
+                        | crate::stdlib::ids::TASKGROUP_WHEN_ALL
+                        | crate::stdlib::ids::TASKGROUP_WHEN_ANY
+                        | crate::stdlib::ids::CTS_NEW
+                        | crate::stdlib::ids::CTS_CANCEL
+                        | crate::stdlib::ids::TOKEN_THROW_IF_CANCELLED
                         | crate::stdlib::ids::THREAD_RUN
                         | crate::stdlib::ids::GC_COLLECT
                         | crate::stdlib::ids::GC_STATS
@@ -1225,7 +1491,16 @@ impl Vm {
                     .find_map(|v| v.as_int().ok())
                     .unwrap_or(0)
                     .max(0) as u64;
-                let task = TaskInner::new_pending();
+                let token = args.iter().find_map(|v| match v {
+                    Value::Object(o) if o.borrow().class_name == "CancellationToken" => Some(v.clone()),
+                    _ => None,
+                });
+                let task = TaskInner::new_pending_with_token(token.clone());
+                self.register_task_token(&task, token.as_ref());
+                if token.as_ref().map(token_is_cancelled).unwrap_or(false) {
+                    let _ = cancel_task(&task);
+                    return Ok(Value::Task(task));
+                }
                 let when = Instant::now() + Duration::from_millis(ms);
                 self.timers.push(when, task.clone());
                 Ok(Value::Task(task))
@@ -1238,7 +1513,16 @@ impl Vm {
                         _ => None,
                     })
                     .ok_or_else(|| RuntimeError::Message("Task.Run requires a function".into()))?;
-                let task = TaskInner::new_pending();
+                let token = args.iter().find_map(|v| match v {
+                    Value::Object(o) if o.borrow().class_name == "CancellationToken" => Some(v.clone()),
+                    _ => None,
+                });
+                let task = TaskInner::new_pending_with_token(token.clone());
+                self.register_task_token(&task, token.as_ref());
+                if token.as_ref().map(token_is_cancelled).unwrap_or(false) {
+                    let _ = cancel_task(&task);
+                    return Ok(Value::Task(task));
+                }
                 self.spawn_coroutine(f.chunk_index, vec![], task.clone(), f.upvalues.clone());
                 Ok(Value::Task(task))
             }
@@ -1255,40 +1539,105 @@ impl Vm {
                 self.invoke_function(&f, &[])
             }
             TASK_WHEN_ALL => {
-                let list = args
-                    .iter()
-                    .find_map(|v| match v {
-                        Value::Array(a) => Some(a.clone()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        RuntimeError::Message("Task.WhenAll requires an array of Tasks".into())
-                    })?;
-                let items: Vec<Value> = list.borrow().clone();
-                let mut tasks = Vec::new();
-                for v in items {
-                    match v {
-                        Value::Task(t) => tasks.push(t),
-                        other => {
-                            // Wrap non-task as already-ready
-                            tasks.push(TaskInner::new_ready(other));
-                        }
+                self.create_join_task(args, false, None)
+            }
+            TASK_WHEN_ANY => {
+                self.create_join_task(args, true, None)
+            }
+            CTS_NEW => Ok(Self::token_source_object()),
+            CTS_CANCEL => {
+                if let Some(Value::Object(source)) = args.iter().find(|v| matches!(v, Value::Object(_))) {
+                    if let Some(Value::Object(token)) = source.borrow().fields.get("token").cloned() {
+                        token
+                            .borrow_mut()
+                            .fields
+                            .insert("isCancelled".into(), Value::Bool(true));
+                        self.cancel_registered_token_tasks(&Value::Object(token));
                     }
                 }
-                let outer = TaskInner::new_pending();
-                if tasks.is_empty() {
-                    let _ = complete_task(
-                        &outer,
-                        crate::gc::alloc_array(Vec::new()),
-                    );
-                    return Ok(Value::Task(outer));
+                Ok(Value::Null)
+            }
+            TOKEN_THROW_IF_CANCELLED => {
+                if let Some(token) = args.iter().find_map(|v| match v {
+                    Value::Object(o) if o.borrow().class_name == "CancellationToken" => Some(v.clone()),
+                    _ => None,
+                }) {
+                    if token_is_cancelled(&token) {
+                        return Err(RuntimeError::Message("operation cancelled".into()));
+                    }
                 }
-                self.joins.push(JoinAll {
-                    outer: outer.clone(),
-                    tasks,
-                });
+                Ok(Value::Null)
+            }
+            TASKGROUP_NEW => Ok(crate::gc::alloc_object(ObjectInstance {
+                class_name: "TaskGroup".into(),
+                fields: HashMap::from([
+                    ("tasks".into(), crate::gc::alloc_array(Vec::new())),
+                    ("token".into(), Self::token_object(false)),
+                ]),
+                class_index: None,
+                finalized: false,
+            })),
+            TASKGROUP_RUN => {
+                let group = args
+                    .iter()
+                    .find(|v| matches!(v, Value::Object(o) if o.borrow().class_name == "TaskGroup"))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Message("TaskGroup.Run requires a TaskGroup receiver".into()))?;
+                let f = args
+                    .iter()
+                    .find_map(|v| match v {
+                        Value::Function(f) => Some(f.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| RuntimeError::Message("TaskGroup.Run requires a function".into()))?;
+                let token = Self::group_token(&group);
+                let task = TaskInner::new_pending_with_token(token.clone());
+                self.register_task_token(&task, token.as_ref());
+                if token.as_ref().map(token_is_cancelled).unwrap_or(false) {
+                    let _ = cancel_task(&task);
+                } else {
+                    self.spawn_coroutine(f.chunk_index, vec![], task.clone(), f.upvalues.clone());
+                }
+                Self::push_group_task(&group, Value::Task(task.clone()));
+                Ok(Value::Task(task))
+            }
+            TASKGROUP_CANCEL => {
+                let group = args
+                    .iter()
+                    .find(|v| matches!(v, Value::Object(o) if o.borrow().class_name == "TaskGroup"))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Message("TaskGroup.Cancel requires a TaskGroup receiver".into()))?;
+                if let Some(Value::Object(token)) = Self::group_token(&group) {
+                    token
+                        .borrow_mut()
+                        .fields
+                        .insert("isCancelled".into(), Value::Bool(true));
+                }
+                self.cancel_group_tasks(&group);
                 self.poll_joins();
-                Ok(Value::Task(outer))
+                Ok(Value::Null)
+            }
+            TASKGROUP_WHEN_ALL => {
+                let group = args
+                    .iter()
+                    .find(|v| matches!(v, Value::Object(o) if o.borrow().class_name == "TaskGroup"))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Message("TaskGroup.WhenAll requires a TaskGroup receiver".into()))?;
+                let list = crate::gc::alloc_array(
+                    Self::group_tasks(&group).into_iter().map(Value::Task).collect(),
+                );
+                self.create_join_task(&[list], false, Self::group_token(&group))
+            }
+            TASKGROUP_WHEN_ANY => {
+                let group = args
+                    .iter()
+                    .find(|v| matches!(v, Value::Object(o) if o.borrow().class_name == "TaskGroup"))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Message("TaskGroup.WhenAny requires a TaskGroup receiver".into()))?;
+                let list = crate::gc::alloc_array(
+                    Self::group_tasks(&group).into_iter().map(Value::Task).collect(),
+                );
+                self.create_join_task(&[list], true, Self::group_token(&group))
             }
             GC_COLLECT => {
                 let before = self.heap.stats().objects_freed;

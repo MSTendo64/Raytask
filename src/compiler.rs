@@ -62,7 +62,6 @@ pub struct Compiler {
 }
 
 struct LoopCtx {
-    start: usize,
     breaks: Vec<usize>,
     continues: Vec<usize>,
 }
@@ -205,12 +204,20 @@ impl Compiler {
                 };
                 for m in &c.members {
                     match m {
-                        Member::Field(f) => info.fields.push(f.name.clone()),
-                        Member::Property(p) => info.fields.push(p.name.clone()),
+                        Member::Field(f) => {
+                            if !f.is_static {
+                                info.fields.push(f.name.clone())
+                            }
+                        }
+                        Member::Property(p) => {
+                            if !p.is_static {
+                                info.fields.push(p.name.clone())
+                            }
+                        }
                         Member::Method(f) => {
                             let idx = self.module.chunks.len();
                             let mut chunk = Chunk::new(format!("{}.{}", c.name, f.name));
-                            chunk.arity = f.params.len() + 1; // + this
+                            chunk.arity = f.params.len() + usize::from(!f.is_static);
                             self.module.chunks.push(chunk);
                             info.methods.push((f.name.clone(), idx));
                             self.functions
@@ -260,7 +267,6 @@ impl Compiler {
                                     .insert(format!("{}.set_Item", c.name), sidx);
                             }
                         }
-                        _ => {}
                     }
                 }
                 self.classes.insert(c.name.clone(), class_idx);
@@ -282,11 +288,15 @@ impl Compiler {
                 };
                 for m in &s.members {
                     match m {
-                        Member::Field(f) => info.fields.push(f.name.clone()),
+                        Member::Field(f) => {
+                            if !f.is_static {
+                                info.fields.push(f.name.clone())
+                            }
+                        }
                         Member::Method(f) => {
                             let idx = self.module.chunks.len();
                             let mut chunk = Chunk::new(format!("{}.{}", s.name, f.name));
-                            chunk.arity = f.params.len() + 1;
+                            chunk.arity = f.params.len() + usize::from(!f.is_static);
                             self.module.chunks.push(chunk);
                             info.methods.push((f.name.clone(), idx));
                             self.functions
@@ -476,7 +486,7 @@ impl Compiler {
                 Member::Method(f) => {
                     let key = format!("{}.{}", c.name, f.name);
                     if let Some(&idx) = self.functions.get(&key) {
-                        self.compile_method_body(idx, f, true)?;
+                        self.compile_method_body(idx, f, !f.is_static)?;
                     }
                 }
                 Member::Constructor(ctor) => {
@@ -492,6 +502,7 @@ impl Compiler {
                             access: Access::Default,
                             is_async: false,
                             is_unsafe: false,
+                            is_static: false,
                             is_virtual: false,
                             is_override: false,
                             is_abstract: false,
@@ -505,15 +516,18 @@ impl Compiler {
                             attributes: vec![],
                             span: d.span,
                         };
-                        self.compile_method_body(idx, &fake, true)?;
+                        self.compile_method_body(idx, &fake, false)?;
                     }
                 }
                 Member::Property(p) => {
+                    if p.auto {
+                        continue;
+                    }
                     if let Some(getter) = &p.getter {
                         let key = format!("{}.get_{}", c.name, p.name);
                         let idx = self.module.chunks.len();
                         let mut chunk = Chunk::new(&key);
-                        chunk.arity = 1;
+                        chunk.arity = usize::from(!p.is_static);
                         self.module.chunks.push(chunk);
                         self.functions.insert(key.clone(), idx);
                         if let Some(ci) = self.classes.get(&c.name).copied() {
@@ -525,6 +539,7 @@ impl Compiler {
                             access: Access::Default,
                             is_async: false,
                             is_unsafe: false,
+                            is_static: p.is_static,
                             is_virtual: false,
                             is_override: false,
                             is_abstract: false,
@@ -538,13 +553,13 @@ impl Compiler {
                             attributes: vec![],
                             span: p.span,
                         };
-                        self.compile_method_body(idx, &fake, true)?;
+                        self.compile_method_body(idx, &fake, !p.is_static)?;
                     }
                     if let Some(setter) = &p.setter {
                         let key = format!("{}.set_{}", c.name, p.name);
                         let idx = self.module.chunks.len();
                         let mut chunk = Chunk::new(&key);
-                        chunk.arity = 2;
+                        chunk.arity = 1 + usize::from(!p.is_static);
                         self.module.chunks.push(chunk);
                         self.functions.insert(key.clone(), idx);
                         if let Some(ci) = self.classes.get(&c.name).copied() {
@@ -556,6 +571,7 @@ impl Compiler {
                             access: Access::Default,
                             is_async: false,
                             is_unsafe: false,
+                            is_static: p.is_static,
                             is_virtual: false,
                             is_override: false,
                             is_abstract: false,
@@ -576,7 +592,7 @@ impl Compiler {
                             attributes: vec![],
                             span: p.span,
                         };
-                        self.compile_method_body(idx, &fake, true)?;
+                        self.compile_method_body(idx, &fake, !p.is_static)?;
                     }
                 }
                 Member::Operator(op) => {
@@ -586,6 +602,7 @@ impl Compiler {
                             access: Access::Default,
                             is_async: false,
                             is_unsafe: false,
+                            is_static: false,
                             is_virtual: false,
                             is_override: false,
                             is_abstract: false,
@@ -626,6 +643,7 @@ impl Compiler {
                                 access: Access::Default,
                                 is_async: false,
                                 is_unsafe: false,
+                                is_static: false,
                                 is_virtual: false,
                                 is_override: false,
                                 is_abstract: false,
@@ -658,6 +676,7 @@ impl Compiler {
                                 access: Access::Default,
                                 is_async: false,
                                 is_unsafe: false,
+                                is_static: false,
                                 is_virtual: false,
                                 is_override: false,
                                 is_abstract: false,
@@ -678,13 +697,15 @@ impl Compiler {
                 _ => {}
             }
         }
+        self.emit_static_members(&c.name, &c.members)?;
         // Register class factory as global
         let line = c.span.line;
         let prev = self.current;
         self.current = 0;
         if let Some(&ci) = self.classes.get(&c.name) {
-            // Store class index as int global for `new Class`
-            self.chunk().emit_constant(Value::Int(ci as i64), line);
+            let _ = ci;
+            self.chunk()
+                .emit_constant(Value::TypeModule(c.name.clone().into()), line);
             let g = self.ensure_global(&c.name);
             self.chunk().emit_op(Op::DefineGlobal, line);
             self.chunk().emit_byte(g, line);
@@ -700,7 +721,7 @@ impl Compiler {
                 Member::Method(f) => {
                     let key = format!("{}.{}", s.name, f.name);
                     if let Some(&idx) = self.functions.get(&key) {
-                        self.compile_method_body(idx, f, true)?;
+                        self.compile_method_body(idx, f, !f.is_static)?;
                     }
                 }
                 Member::Constructor(ctor) => {
@@ -712,11 +733,14 @@ impl Compiler {
                 _ => {}
             }
         }
+        self.emit_static_members(&s.name, &s.members)?;
         let line = s.span.line;
         let prev = self.current;
         self.current = 0;
         if let Some(&ci) = self.classes.get(&s.name) {
-            self.chunk().emit_constant(Value::Int(ci as i64), line);
+            let _ = ci;
+            self.chunk()
+                .emit_constant(Value::TypeModule(s.name.clone().into()), line);
             let g = self.ensure_global(&s.name);
             self.chunk().emit_op(Op::DefineGlobal, line);
             self.chunk().emit_byte(g, line);
@@ -754,6 +778,36 @@ impl Compiler {
         self.chunk().emit_op(Op::Return, f.span.line);
         self.end_scope();
         self.finish_locals(idx);
+        self.current = prev;
+        Ok(())
+    }
+
+    fn emit_static_members(&mut self, type_name: &str, members: &[Member]) -> CompileResult<()> {
+        let prev = self.current;
+        self.current = 0;
+        for m in members {
+            match m {
+                Member::Field(f) if f.is_static => {
+                    let key = format!("{}.{}", type_name, f.name);
+                    if let Some(init) = &f.init {
+                        self.compile_expr(init)?;
+                    } else {
+                        self.chunk().emit_op(Op::Null, f.span.line);
+                    }
+                    let g = self.ensure_global(&key);
+                    self.chunk().emit_op(Op::DefineGlobal, f.span.line);
+                    self.chunk().emit_byte(g, f.span.line);
+                }
+                Member::Property(p) if p.is_static && p.auto => {
+                    let key = format!("{}.{}", type_name, p.name);
+                    self.chunk().emit_op(Op::Null, p.span.line);
+                    let g = self.ensure_global(&key);
+                    self.chunk().emit_op(Op::DefineGlobal, p.span.line);
+                    self.chunk().emit_byte(g, p.span.line);
+                }
+                _ => {}
+            }
+        }
         self.current = prev;
         Ok(())
     }
@@ -1099,7 +1153,6 @@ impl Compiler {
             Stmt::While { cond, body, span } => {
                 let loop_start = self.chunk().code.len();
                 self.loop_stack.push(LoopCtx {
-                    start: loop_start,
                     breaks: vec![],
                     continues: vec![],
                 });
@@ -1126,7 +1179,6 @@ impl Compiler {
             Stmt::DoWhile { body, cond, span } => {
                 let loop_start = self.chunk().code.len();
                 self.loop_stack.push(LoopCtx {
-                    start: loop_start,
                     breaks: vec![],
                     continues: vec![],
                 });
@@ -1162,7 +1214,6 @@ impl Compiler {
                 }
                 let loop_start = self.chunk().code.len();
                 self.loop_stack.push(LoopCtx {
-                    start: loop_start,
                     breaks: vec![],
                     continues: vec![],
                 });
@@ -1222,7 +1273,6 @@ impl Compiler {
 
                 let loop_start = self.chunk().code.len();
                 self.loop_stack.push(LoopCtx {
-                    start: loop_start,
                     breaks: vec![],
                     continues: vec![],
                 });
@@ -1788,6 +1838,20 @@ impl Compiler {
                 }
                 // Method call: obj.method(args) => [fn, obj, args...]
                 if let Expr::Member { object, field, .. } = callee.as_ref() {
+                    if let Expr::Ident(type_name, _) = object.as_ref() {
+                        if self.classes.contains_key(type_name) {
+                            self.compile_expr(object)?;
+                            self.chunk()
+                                .emit_constant(Value::String(field.clone().into()), line);
+                            self.chunk().emit_op(Op::GetProperty, line);
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
+                            self.chunk().emit_op(Op::Call, line);
+                            self.chunk().emit_byte(args.len() as u8, line);
+                            return Ok(());
+                        }
+                    }
                     self.compile_expr(object)?;
                     self.chunk().emit_op(Op::Dup, line);
                     self.chunk()

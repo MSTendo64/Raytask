@@ -1,70 +1,72 @@
 # RayTask Language Specification
 
-Short reference for the language and standard library. See also the [user guide](GUIDE.md).
+This document is the normative root of the RayTask language specification. `GUIDE.md` is tutorial and descriptive; this file and the chapter files under `docs/spec/` define source-level language behavior that the compiler, VM, native backend, and conformance tests are expected to follow.
 
-## Language
+## Normative Split
 
-| Item | Detail |
-|------|--------|
+- `docs/GUIDE.md`: tutorial, onboarding, examples, workflows
+- `docs/SPEC.md`: normative index, compatibility policy, chapter map
+- `docs/spec/*.md`: normative semantic chapters
+- `docs/REGISTRY_PROTOCOL.md`: sibling protocol specification, not part of the core language
+
+## Language Model
+
+RayTask follows a managed language model closer to C# than to Rust:
+
+- reference/value semantics are explicit at the type-model level
+- `null` is a valid value for reference-like and explicitly nullable types
+- ownership and aliasing rules are enforced around managed references, `unsafe` pointers, and interop boundaries, not via a Rust-style borrow checker
+- generic constraints and variance are semantic concepts, not purely codegen artifacts
+- `static` members are part of the language model and are distinct from instance dispatch
+- async is cooperative and task-based; cancellation is observable at async boundaries
+
+## Compatibility Policy
+
+RayTask source compatibility is governed by the following policy:
+
+1. Changes that alter parsing, type checking, overload resolution, nullability, dispatch, async state transitions, or generic constraint behavior require a corresponding update in this spec.
+2. Every normative chapter must map to one or more tests under `tests/`.
+3. Behavior may evolve between milestones, but silent semantic drift between VM, native, and docs is considered a bug.
+4. New syntax may be added in a backward-compatible way; changing the meaning of already-valid code requires an explicit spec update and regression coverage.
+
+## Chapter Map
+
+- `docs/spec/01-language-model.md`
+- `docs/spec/02-type-system.md`
+- `docs/spec/03-oop-async-conformance.md`
+
+## Snapshot Reference
+
+| Item | Current normative summary |
+|------|---------------------------|
 | File extension | `.rt` |
-| Entry point | `void Main()` |
+| Entry point | `void Main()` or `async void Main()` |
 | Imports | `import bstd.io;` |
-| Visibility | `export` for public API |
+| Visibility | `export`, `protected`, `private` |
 | Parameters | `name: type` |
-| Typing | `dyn` (dynamic), `var` (inferred) |
-| Memory | GC / `stack` / `owned` / `unsafe` |
-| CLI GC flags | `raytask run --gc` (default) / `--no-gc` / `--gc-stress` |
-| Runtime GC | `Gc.Collect()`, `Gc.Stats()`, `gc()`, finalizers `~new` |
-| Closures | lambdas capture locals |
-| Generics | compile-time monomorphization (`Id__int`, `Box__string`) |
+| Dynamic typing escape hatch | `dyn` |
+| Nullability surface | `T?` and reference-null support |
+| Memory surface | managed GC + `stack` / `owned` / `unsafe` escape hatches |
+| Async surface | `async`, `await`, `Task`, `TaskGroup`, cancellation tokens |
+| Generic implementation | semantic checking + monomorphization |
+| Dispatch | instance vs `static` members are distinct |
 
-## Product targets (`--target`)
+## Product Targets
 
 | Target | Result |
 |--------|--------|
 | `bytecode` | `.rtbc` for the VM |
-| `native` | C + gcc/clang; runtime with **async (`RtTask` / `await`) and GC** |
+| `native` | generated C/native flow with RayTask runtime semantics |
 | `app` | standalone executable (stub + bytecode) |
-| `wasm` | C + HTML/JS shell (+ emcc/clang when available) |
-| `web` | web bundle: wasm scaffold + `embedded.rtbc` / `rtbc.js` |
+| `wasm` | C + HTML/JS shell |
+| `web` | web bundle scaffold + embedded bytecode |
 | `mobile` | Android + iOS scaffolds with bytecode |
 | `embedded` | freestanding C + `link.ld` |
 | `kernel` | freestanding, GC off, `[export:"kmain"]`, `[interrupt:]` |
-| `native-bin` | NativeCodeGen + Linker → PE/ELF/Mach-O (`--platform windows\|linux\|macos`) |
-| `efi` | UEFI PE32+ (`.efi`) with freestanding mini-interpreter |
-| `raw` | flat binary (`.text` + RTBC payload) |
+| `native-bin` | NativeCodeGen + linker output |
+| `efi` | UEFI PE32+ |
+| `raw` | flat binary |
 
-Also: `raytask link program.rtbc --platform windows|linux|macos|uefi|raw -o out`.
+## Standard Library Surface
 
-Attributes: `[address: 0x…]` (MMIO), `[interrupt: N]`, `[no_gc]`, `[export:]`, `[target: wasm]`.
-
-## Packages / registry
-
-- Manifest: `project.rtp`
-- Commands: `raytask install` / `uninstall` / `update` / `search` / `publish`
-- Local: `registry/`, `RAYTASK_REGISTRY`
-- Remote: `RAYTASK_REGISTRY_URL` → `GET /index.json`, `GET`/`POST /packages/{name}/{version}`
-
-## Standard library (`bstd`)
-
-| Namespace | Description |
-|-----------|-------------|
-| `bstd.io` | Console: `print`, `write`, `readLine`, `readKey` |
-| `bstd.fs` | `File`, `Directory`, `FileInfo` |
-| `bstd.net` | HTTP / TCP / UDP (sync in the current VM) |
-| `bstd.async` | `Task.Delay` / `Task.Run` |
-| `bstd.string` | String methods, `string.Join`, `StringBuilder` |
-| `bstd.regex` | `regex(pattern)` |
-| `bstd.json` | `Json.Parse` / `Stringify` |
-| `bstd.yml` | `Yaml.Parse` / `Serialize` |
-| `bstd.collections` | `List`, `Dictionary`, `Set`, `Queue`, `Stack` |
-| `bstd.math` | `Math`, `Random` |
-| `bstd.time` | `DateTime` |
-| `bstd.crypto` | `Hash` (SHA256 / SHA1 / MD5) |
-| `bstd.unsafe` | `malloc` / `free` / `sizeof` |
-| FFI attrs | `[DllImport:]` / `[link:]` / `[include:]` / `[c:]` / `[abi:]` / `[export:]` |
-| `bstd.result` | `Ok` / `Error` |
-| `bstd.test` | `assert` / `assertEq` |
-| `bstd.logging` | `Logger` |
-
-API stubs: `stdlib/bstd/*.rt`. Implementations: `src/stdlib/`.
+The normative language surface depends on library declarations in `stdlib/bstd/*.rt`. Runtime implementations live in `src/stdlib/`, `src/vm.rs`, and backend-specific lowering.

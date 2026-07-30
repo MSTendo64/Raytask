@@ -2,9 +2,7 @@
 
 use crate::error::RuntimeResult;
 use crate::value::{ObjectInstance, Value};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub fn ok(args: &[Value]) -> RuntimeResult<Value> {
     let mut fields = HashMap::new();

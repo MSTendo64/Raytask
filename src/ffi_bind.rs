@@ -128,6 +128,7 @@ fn proto_to_item(proto: &CPrototype, lib: &str) -> Item {
         access: Access::Export,
         is_async: false,
         is_unsafe: false,
+        is_static: false,
         is_virtual: false,
         is_override: false,
         is_abstract: false,

@@ -3,7 +3,7 @@
 use crate::ast::*;
 use crate::error::{CompileError, CompileResult};
 use crate::span::Span;
-use crate::types::{builtin_functions, ty_from_ref, Ty};
+use crate::types::{builtin_functions, ty_from_ref, Ty, TypeCategory};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -40,10 +40,12 @@ impl TypeCheckReport {
 
 #[derive(Debug, Clone)]
 pub(crate) struct FuncSig {
+    #[allow(dead_code)]
     pub name: String,
     pub params: Vec<(String, Ty)>,
     pub ret: Ty,
     pub type_params: Vec<String>,
+    #[allow(dead_code)]
     pub is_method: bool,
     #[allow(dead_code)]
     pub is_static: bool,
@@ -52,11 +54,14 @@ pub(crate) struct FuncSig {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TypeDef {
+    #[allow(dead_code)]
     pub name: String,
     pub kind: TypeDefKind,
     pub type_params: Vec<String>,
     pub fields: HashMap<String, Ty>,
+    pub static_fields: HashMap<String, Ty>,
     pub properties: HashMap<String, Ty>,
+    pub static_properties: HashMap<String, Ty>,
     pub methods: HashMap<String, FuncSig>,
     pub constructors: Vec<FuncSig>,
     pub bases: Vec<String>,
@@ -96,6 +101,8 @@ pub struct TypeChecker {
     type_params: HashSet<String>,
     /// Inheritance: child → parents
     inheritance: HashMap<String, Vec<String>>,
+    /// Generic constraints declared on named types.
+    generic_constraints: HashMap<String, Vec<GenericConstraint>>,
     /// Extension methods: receiver type name → method name → sig (params include `this`)
     extensions: HashMap<String, HashMap<String, FuncSig>>,
     /// Type currently being defined (allows self-references in members).
@@ -122,6 +129,7 @@ impl TypeChecker {
             base_ty: None,
             type_params: HashSet::new(),
             inheritance: HashMap::new(),
+            generic_constraints: HashMap::new(),
             extensions: HashMap::new(),
             current_type: None,
             in_loop: 0,
@@ -159,7 +167,9 @@ impl TypeChecker {
             kind: TypeDefKind::Class,
             type_params: vec!["T".into()],
             fields: HashMap::new(),
+            static_fields: HashMap::new(),
             properties: HashMap::from([("Count".into(), Ty::Int), ("Length".into(), Ty::Int)]),
+            static_properties: HashMap::new(),
             methods: HashMap::new(),
             constructors: vec![FuncSig {
                 name: "new".into(),
@@ -336,7 +346,9 @@ impl TypeChecker {
             kind: TypeDefKind::Class,
             type_params: vec![],
             fields: HashMap::new(),
+            static_fields: HashMap::new(),
             properties: HashMap::from([("Length".into(), Ty::Int)]),
+            static_properties: HashMap::new(),
             methods: HashMap::new(),
             constructors: vec![],
             bases: vec![],
@@ -474,7 +486,9 @@ impl TypeChecker {
                 kind: TypeDefKind::Struct,
                 type_params: vec![],
                 fields: HashMap::new(),
+                static_fields: HashMap::new(),
                 properties: HashMap::new(),
+                static_properties: HashMap::new(),
                 methods: HashMap::new(),
                 constructors: vec![],
                 bases: vec![],
@@ -545,7 +559,9 @@ impl TypeChecker {
                         kind: TypeDefKind::Class,
                         type_params: c.type_params.clone(),
                         fields: HashMap::new(),
+                        static_fields: HashMap::new(),
                         properties: HashMap::new(),
+                        static_properties: HashMap::new(),
                         methods: HashMap::new(),
                         constructors: vec![],
                         bases: c.bases.iter().map(|b| b.name.clone()).collect(),
@@ -557,6 +573,8 @@ impl TypeChecker {
                     c.name.clone(),
                     c.bases.iter().map(|b| b.name.clone()).collect(),
                 );
+                self.generic_constraints
+                    .insert(c.name.clone(), c.constraints.clone());
             }
             Item::Struct(s) => {
                 if self.types.contains_key(&s.name) {
@@ -569,7 +587,9 @@ impl TypeChecker {
                         kind: TypeDefKind::Struct,
                         type_params: s.type_params.clone(),
                         fields: HashMap::new(),
+                        static_fields: HashMap::new(),
                         properties: HashMap::new(),
+                        static_properties: HashMap::new(),
                         methods: HashMap::new(),
                         constructors: vec![],
                         bases: vec![],
@@ -577,6 +597,7 @@ impl TypeChecker {
                         span: s.span,
                     },
                 );
+                self.generic_constraints.insert(s.name.clone(), Vec::new());
             }
             Item::Interface(i) => {
                 if self.types.contains_key(&i.name) {
@@ -589,7 +610,9 @@ impl TypeChecker {
                         kind: TypeDefKind::Interface,
                         type_params: i.type_params.clone(),
                         fields: HashMap::new(),
+                        static_fields: HashMap::new(),
                         properties: HashMap::new(),
+                        static_properties: HashMap::new(),
                         methods: HashMap::new(),
                         constructors: vec![],
                         bases: vec![],
@@ -597,6 +620,7 @@ impl TypeChecker {
                         span: i.span,
                     },
                 );
+                self.generic_constraints.insert(i.name.clone(), Vec::new());
             }
             _ => {}
         }
@@ -649,7 +673,9 @@ impl TypeChecker {
         }
         let mut def = self.types.get(&c.name).cloned().expect("class predeclared");
         def.fields.clear();
+        def.static_fields.clear();
         def.properties.clear();
+        def.static_properties.clear();
         def.methods.clear();
         def.constructors.clear();
         def.bases = c.bases.iter().map(|b| b.name.clone()).collect();
@@ -676,7 +702,9 @@ impl TypeChecker {
         }
         let mut def = self.types.get(&s.name).cloned().expect("struct predeclared");
         def.fields.clear();
+        def.static_fields.clear();
         def.properties.clear();
+        def.static_properties.clear();
         def.methods.clear();
         def.constructors.clear();
 
@@ -699,7 +727,9 @@ impl TypeChecker {
         }
         let mut def = self.types.get(&i.name).cloned().expect("interface predeclared");
         def.fields.clear();
+        def.static_fields.clear();
         def.properties.clear();
+        def.static_properties.clear();
         def.methods.clear();
 
         let saved = self.type_params.clone();
@@ -723,20 +753,33 @@ impl TypeChecker {
                     .as_ref()
                     .map(|t| self.resolve_type_ref(t))
                     .unwrap_or(Ty::Dyn);
-                if def.fields.contains_key(&f.name) {
+                let target = if f.is_static {
+                    &mut def.static_fields
+                } else {
+                    &mut def.fields
+                };
+                if target.contains_key(&f.name) {
                     self.err(
                         format!("duplicate field '{}.{}'", type_name, f.name),
                         f.span,
                     );
                 }
-                def.fields.insert(f.name.clone(), ty);
+                target.insert(f.name.clone(), ty);
             }
             Member::Property(p) => {
                 let ty = self.resolve_type_ref(&p.ty);
-                def.properties.insert(p.name.clone(), ty.clone());
+                if p.is_static {
+                    def.static_properties.insert(p.name.clone(), ty.clone());
+                } else {
+                    def.properties.insert(p.name.clone(), ty.clone());
+                }
                 // auto-props also act as fields
                 if p.auto {
-                    def.fields.entry(p.name.clone()).or_insert(ty);
+                    if p.is_static {
+                        def.static_fields.entry(p.name.clone()).or_insert(ty);
+                    } else {
+                        def.fields.entry(p.name.clone()).or_insert(ty);
+                    }
                 }
             }
             Member::Method(f) => {
@@ -854,7 +897,7 @@ impl TypeChecker {
             ret,
             type_params: f.type_params.clone(),
             is_method,
-            is_static: false,
+            is_static: f.is_static,
             span: f.span,
         }
     }
@@ -911,10 +954,99 @@ impl TypeChecker {
                         self.warn(format!("unknown generic type '{}'", name), tr.span);
                     }
                 }
+                self.validate_named_generic_instantiation(name, tr, &ty);
             }
             _ => {}
         }
         ty
+    }
+
+    fn validate_named_generic_instantiation(&mut self, name: &str, tr: &TypeRef, ty: &Ty) {
+        let Ty::Generic { args, .. } = ty else {
+            return;
+        };
+        let Some(td) = self.types.get(name).cloned() else {
+            return;
+        };
+        if args.len() != td.type_params.len() {
+            self.err(
+                format!(
+                    "generic type '{}' expects {} type argument(s), found {}",
+                    name,
+                    td.type_params.len(),
+                    args.len()
+                ),
+                tr.span,
+            );
+            return;
+        }
+        let constraints = self
+            .generic_constraints
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        for gc in constraints {
+            let Some(pos) = td.type_params.iter().position(|tp| tp == &gc.type_param) else {
+                continue;
+            };
+            let Some(arg) = args.get(pos) else {
+                continue;
+            };
+            for bound in gc.bounds {
+                if bound.name == "new" && bound.args.is_empty() {
+                    if !self.type_has_parameterless_constructor(arg) {
+                        self.err(
+                            format!(
+                                "type argument '{}' for '{}' must satisfy 'new()'",
+                                arg, gc.type_param
+                            ),
+                            tr.span,
+                        );
+                    }
+                    continue;
+                }
+                let expected = self.resolve_type_ref(&bound);
+                if !self.is_semantically_assignable(arg, &expected) {
+                    self.err(
+                        format!(
+                            "type argument '{}' for '{}' must satisfy '{}'",
+                            arg, gc.type_param, expected
+                        ),
+                        tr.span,
+                    );
+                }
+            }
+        }
+    }
+
+    fn type_has_parameterless_constructor(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named(name) | Ty::Generic { name, .. } => self
+                .types
+                .get(name)
+                .map(|td| td.kind == TypeDefKind::Struct || td.constructors.iter().any(|c| c.params.is_empty()))
+                .unwrap_or(false),
+            Ty::String
+            | Ty::Array { .. }
+            | Ty::Ptr(_)
+            | Ty::Nullable(_)
+            | Ty::Dyn
+            | Ty::Error => true,
+            Ty::Bool
+            | Ty::Byte
+            | Ty::SByte
+            | Ty::Short
+            | Ty::UShort
+            | Ty::Int
+            | Ty::UInt
+            | Ty::Long
+            | Ty::ULong
+            | Ty::Float
+            | Ty::Double
+            | Ty::Decimal
+            | Ty::Char => true,
+            _ => false,
+        }
     }
 
     fn check_inheritance(&mut self) {
@@ -949,6 +1081,18 @@ impl TypeChecker {
             if bases.is_empty() {
                 continue;
             }
+            for base in &bases {
+                if let Some(base_td) = self.types.get(base).cloned() {
+                    if base_td.kind == TypeDefKind::Interface {
+                        self.check_interface_contract(
+                            &name,
+                            base,
+                            &base_td.methods,
+                            &base_td.properties,
+                        );
+                    }
+                }
+            }
             let methods: Vec<(String, FuncSig)> = self
                 .types
                 .get(&name)
@@ -959,7 +1103,7 @@ impl TypeChecker {
                     if let Some(base_sig) = self.lookup_method_in_type(base, &mname) {
                         if sig.params.len() != base_sig.params.len()
                             || sig.ret != base_sig.ret
-                                && !sig.ret.is_assignable_to(&base_sig.ret)
+                                && !self.is_semantically_assignable(&sig.ret, &base_sig.ret)
                         {
                             self.err(
                                 format!(
@@ -971,6 +1115,53 @@ impl TypeChecker {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn check_interface_contract(
+        &mut self,
+        child: &str,
+        interface_name: &str,
+        iface_methods: &HashMap<String, FuncSig>,
+        iface_properties: &HashMap<String, Ty>,
+    ) {
+        let Some(child_td) = self.types.get(child).cloned() else {
+            return;
+        };
+        for (name, sig) in iface_methods {
+            let Some(found) = child_td.methods.get(name) else {
+                self.err(
+                    format!("type '{}' does not implement interface method '{}.{}'", child, interface_name, name),
+                    child_td.span,
+                );
+                continue;
+            };
+            if found.params.len() != sig.params.len()
+                || !self.is_semantically_assignable(&found.ret, &sig.ret)
+                || found.is_static != sig.is_static
+            {
+                self.err(
+                    format!("method '{}.{}' does not match interface '{}.{}'", child, name, interface_name, name),
+                    found.span,
+                );
+            }
+        }
+        for (name, ty) in iface_properties {
+            let Some(found) = child_td.properties.get(name) else {
+                self.err(
+                    format!("type '{}' does not implement interface property '{}.{}'", child, interface_name, name),
+                    child_td.span,
+                );
+                continue;
+            };
+            if !self.is_semantically_assignable(found, ty)
+                || !self.is_semantically_assignable(ty, found)
+            {
+                self.err(
+                    format!("property '{}.{}' does not match interface '{}.{}'", child, name, interface_name, name),
+                    child_td.span,
+                );
             }
         }
     }
@@ -990,11 +1181,10 @@ impl TypeChecker {
     }
 
     fn is_subtype(&self, child: &Ty, parent: &Ty) -> bool {
-        if child.is_assignable_to(parent) {
-            return true;
-        }
         match (child, parent) {
             (Ty::Named(c), Ty::Named(p)) => self.is_ancestor(p, c),
+            (Ty::Generic { name: c, .. }, Ty::Named(p)) => self.is_ancestor(p, c),
+            (Ty::Generic { name: c, .. }, Ty::Generic { name: p, .. }) => self.is_ancestor(p, c),
             _ => false,
         }
     }
@@ -1027,7 +1217,18 @@ impl TypeChecker {
             Item::Class(c) => self.check_class(c),
             Item::Struct(s) => self.check_struct(s),
             Item::Interface(_) => {} // signatures only
-            Item::Function(f) => self.check_function(f, None, None),
+            Item::Function(f) => {
+                if f.is_static {
+                    self.err(
+                        format!(
+                            "'static' is only valid on type members, not on top-level function '{}'",
+                            f.name
+                        ),
+                        f.span,
+                    );
+                }
+                self.check_function(f, None, None)
+            },
             Item::Const(c) => {
                 let expected = self.resolve_type_ref(&c.ty);
                 let actual = self.check_expr(&c.value);
@@ -1074,6 +1275,45 @@ impl TypeChecker {
                     }
                 }
                 Member::Method(f) => {
+                    if f.is_static && (f.is_virtual || f.is_override) {
+                        self.err(
+                            format!("static method '{}' cannot be virtual or override", f.name),
+                            f.span,
+                        );
+                    }
+                    if let Some(base_ty) = &base {
+                        let base_name = match base_ty {
+                            Ty::Named(name) => Some(name.as_str()),
+                            Ty::Generic { name, .. } => Some(name.as_str()),
+                            _ => None,
+                        };
+                        if let Some(base_name) = base_name {
+                            let base_has_method = self.lookup_method_in_type(base_name, &f.name).is_some();
+                            let base_is_class = self
+                                .types
+                                .get(base_name)
+                                .map(|td| td.kind == TypeDefKind::Class)
+                                .unwrap_or(false);
+                            if base_is_class && base_has_method && !f.is_override && !f.is_static {
+                                self.err(
+                                    format!(
+                                        "method '{}.{}' hides a base member; mark it as override",
+                                        c.name, f.name
+                                    ),
+                                    f.span,
+                                );
+                            }
+                            if f.is_override && (!base_is_class || !base_has_method) {
+                                self.err(
+                                    format!(
+                                        "method '{}.{}' is marked override but no base member exists",
+                                        c.name, f.name
+                                    ),
+                                    f.span,
+                                );
+                            }
+                        }
+                    }
                     if f.is_abstract && f.body.is_some() {
                         self.err(
                             format!("abstract method '{}' cannot have a body", f.name),
@@ -1087,7 +1327,9 @@ impl TypeChecker {
                             f.span,
                         );
                     }
-                    self.check_function(f, Some(this.clone()), base.clone());
+                    let this_for_method = if f.is_static { None } else { Some(this.clone()) };
+                    let base_for_method = if f.is_static { None } else { base.clone() };
+                    self.check_function(f, this_for_method, base_for_method);
                 }
                 Member::Constructor(ctor) => {
                     self.check_constructor(ctor, this.clone(), base.clone());
@@ -1105,7 +1347,7 @@ impl TypeChecker {
                 }
                 Member::Property(p) => {
                     let ty = self.resolve_type_ref(&p.ty);
-                    self.this_ty = Some(this.clone());
+                    self.this_ty = if p.is_static { None } else { Some(this.clone()) };
                     if let Some(g) = &p.getter {
                         self.expected_return = Some(ty.clone());
                         self.push_scope();
@@ -1167,7 +1409,10 @@ impl TypeChecker {
         let this = Ty::Named(s.name.clone());
         for m in &s.members {
             match m {
-                Member::Method(f) => self.check_function(f, Some(this.clone()), None),
+                Member::Method(f) => {
+                    let this_for_method = if f.is_static { None } else { Some(this.clone()) };
+                    self.check_function(f, this_for_method, None)
+                }
                 Member::Constructor(ctor) => {
                     self.check_constructor(ctor, this.clone(), None);
                 }
@@ -1464,17 +1709,18 @@ impl TypeChecker {
                 let st = self.check_expr(expr);
                 for case in cases {
                     for pat in &case.patterns {
+                        let st_for_case = st.clone();
                         let check_pat = |sema: &mut Self, e: &Expr| {
                             let pt = sema.check_expr(e);
-                            if !pt.is_assignable_to(&st)
-                                && !st.is_assignable_to(&pt)
-                                && !matches!(st, Ty::Dyn)
+                            if !sema.is_semantically_assignable(&pt, &st_for_case)
+                                && !sema.is_semantically_assignable(&st_for_case, &pt)
+                                && !matches!(st_for_case, Ty::Dyn)
                                 && !matches!(pt, Ty::Dyn)
                             {
                                 sema.warn(
                                     format!(
                                         "switch case type '{}' may not match switch expression '{}'",
-                                        pt, st
+                                        pt, st_for_case
                                     ),
                                     e.span(),
                                 );
@@ -1725,8 +1971,8 @@ impl TypeChecker {
                 let from = self.check_expr(expr);
                 let to = self.resolve_type_ref(ty);
                 // Allow most casts; warn on obviously impossible
-                if !from.is_assignable_to(&to)
-                    && !to.is_assignable_to(&from)
+                if !self.is_semantically_assignable(&from, &to)
+                    && !self.is_semantically_assignable(&to, &from)
                     && !from.is_numeric()
                     && !to.is_numeric()
                     && !matches!(from, Ty::Dyn | Ty::Error)
@@ -1880,8 +2126,8 @@ impl TypeChecker {
                 Ty::Error
             }
             BinOp::Eq | BinOp::Ne => {
-                if lt.is_assignable_to(&rt)
-                    || rt.is_assignable_to(&lt)
+                if self.is_semantically_assignable(&lt, &rt)
+                    || self.is_semantically_assignable(&rt, &lt)
                     || matches!(lt, Ty::Null)
                     || matches!(rt, Ty::Null)
                     || self.is_subtype(&lt, &rt)
@@ -2161,7 +2407,7 @@ impl TypeChecker {
                     );
                 }
                 for (i, (p, a)) in params.iter().zip(arg_tys.iter()).enumerate() {
-                    if !a.is_assignable_to(p) && !self.is_subtype(a, p) {
+                    if !self.is_semantically_assignable(a, p) {
                         self.err(
                             format!(
                                 "argument {}: expected '{}', found '{}'",
@@ -2219,7 +2465,7 @@ impl TypeChecker {
             if matches!(pt, Ty::Dyn) {
                 continue;
             }
-            if !at.is_assignable_to(pt) && !self.is_subtype(at, pt) {
+            if !self.is_semantically_assignable(at, pt) {
                 self.err(
                     format!(
                         "argument {} of '{}': expected '{}', found '{}'",
@@ -2345,6 +2591,7 @@ impl TypeChecker {
             _ => return None,
         };
         self.lookup_method_in_type(&type_name, name)
+            .filter(|sig| !sig.is_static)
     }
 
     fn instantiate_sig(&self, sig: &mut FuncSig, obj_ty: &Ty, type_args: &[Ty]) {
@@ -2397,15 +2644,38 @@ impl TypeChecker {
         // Static member: Type.Parse
         if let Expr::Ident(name, _) = object {
             if self.types.contains_key(name) || is_primitive_name(name) {
+                if let Some(ty) = self.lookup_static_field_or_prop(name, field) {
+                    return ty;
+                }
                 if let Some(sig) = self.lookup_method_in_type(name, field) {
-                    return Ty::Func {
-                        params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
-                        ret: Box::new(sig.ret),
-                    };
+                    if sig.is_static {
+                        return Ty::Func {
+                            params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                            ret: Box::new(sig.ret),
+                        };
+                    }
                 }
             }
         }
         self.lookup_field_or_prop(&ot, field, span)
+    }
+
+    fn lookup_static_field_or_prop(&self, type_name: &str, field: &str) -> Option<Ty> {
+        let mut current = Some(type_name.to_string());
+        while let Some(name) = current {
+            if let Some(td) = self.types.get(&name) {
+                if let Some(t) = td.static_fields.get(field) {
+                    return Some(t.clone());
+                }
+                if let Some(t) = td.static_properties.get(field) {
+                    return Some(t.clone());
+                }
+                current = td.bases.first().cloned();
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     fn lookup_field_or_prop(&mut self, ot: &Ty, field: &str, span: Span) -> Ty {
@@ -2556,7 +2826,9 @@ impl TypeChecker {
                 for (i, idx) in indices.iter().enumerate() {
                     let it = self.check_expr(idx);
                     if let Some((_, expected)) = m.params.get(i) {
-                        if !it.is_assignable_to(expected) && !matches!(it, Ty::Dyn | Ty::Error) {
+                        if !self.is_semantically_assignable(&it, expected)
+                            && !matches!(it, Ty::Dyn | Ty::Error)
+                        {
                             self.err(
                                 format!(
                                     "indexer argument type mismatch: {} vs {}",
@@ -2673,7 +2945,7 @@ impl TypeChecker {
                         let mut ok = true;
                         for ((_, pt), at) in ctor.params.iter().zip(arg_tys.iter()) {
                             let pt = substitute_for_obj(pt, &ty);
-                            if !at.is_assignable_to(&pt) && !self.is_subtype(at, &pt) {
+                            if !self.is_semantically_assignable(at, &pt) {
                                 ok = false;
                                 break;
                             }
@@ -2765,7 +3037,7 @@ impl TypeChecker {
     }
 
     fn expect_assignable(&mut self, from: &Ty, to: &Ty, span: Span, ctx: &str) {
-        if from.is_assignable_to(to) || self.is_subtype(from, to) {
+        if self.is_semantically_assignable(from, to) {
             return;
         }
         if matches!(from, Ty::Error) || matches!(to, Ty::Error) {
@@ -2778,6 +3050,70 @@ impl TypeChecker {
             ),
             span,
         );
+    }
+
+    fn type_category(&self, ty: &Ty) -> TypeCategory {
+        match ty {
+            Ty::Named(name) => self
+                .types
+                .get(name)
+                .map(|td| match td.kind {
+                    TypeDefKind::Struct => TypeCategory::Value,
+                    TypeDefKind::Class | TypeDefKind::Interface => TypeCategory::Reference,
+                })
+                .unwrap_or_else(|| ty.category()),
+            Ty::Generic { name, .. } => self
+                .types
+                .get(name)
+                .map(|td| match td.kind {
+                    TypeDefKind::Struct => TypeCategory::Value,
+                    TypeDefKind::Class | TypeDefKind::Interface => TypeCategory::Reference,
+                })
+                .unwrap_or_else(|| ty.category()),
+            other => other.category(),
+        }
+    }
+
+    fn can_accept_null(&self, ty: &Ty) -> bool {
+        matches!(
+            self.type_category(ty),
+            TypeCategory::Reference
+                | TypeCategory::Nullable
+                | TypeCategory::Pointer
+                | TypeCategory::Dynamic
+                | TypeCategory::Error
+        )
+    }
+
+    fn is_semantically_assignable(&self, from: &Ty, to: &Ty) -> bool {
+        if matches!(from, Ty::Error) || matches!(to, Ty::Error) {
+            return true;
+        }
+        if matches!(to, Ty::Dyn | Ty::Error) || matches!(from, Ty::Dyn | Ty::Error) {
+            return true;
+        }
+        if matches!(from, Ty::Null) {
+            return self.can_accept_null(to);
+        }
+        if let Ty::Nullable(inner) = to {
+            return self.is_semantically_assignable(from, inner) || matches!(from, Ty::Null);
+        }
+        if matches!(from, Ty::Nullable(_)) && !matches!(to, Ty::Nullable(_) | Ty::Dyn | Ty::Error) {
+            return false;
+        }
+        match (from, to) {
+            (
+                Ty::Generic { name: na, args: aa },
+                Ty::Generic { name: nb, args: ab },
+            ) if na == nb && aa.len() == ab.len() => {
+                return aa
+                    .iter()
+                    .zip(ab.iter())
+                    .all(|(a, b)| self.is_semantically_assignable(a, b) && self.is_semantically_assignable(b, a));
+            }
+            _ => {}
+        }
+        from.is_assignable_to(to) || self.is_subtype(from, to)
     }
 }
 

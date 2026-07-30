@@ -49,6 +49,8 @@ raytask check src/main.rt          # parse + typecheck
 raytask run src/main.rt            # typecheck + VM
 raytask build src/main.rt          # write .rtbc
 raytask build src/main.rt --target native
+raytask tcc examples/tcc/hello.c -o hello.exe
+raytask tcc -run examples/tcc/hello.c -- demo
 ```
 
 GC controls:
@@ -163,7 +165,7 @@ void Main() {
 | Command | Purpose |
 |---------|---------|
 | `--target bytecode` | VM module (`.rtbc`) |
-| `--target native` | C source / host binary |
+| `--target native` | C source / host binary (vendored TCC first) |
 | `--target app` | single executable with embedded runtime |
 | `--target wasm` | WebAssembly scaffold |
 | `--target web` | browser bundle |
@@ -187,6 +189,20 @@ raytask link main.rtbc --platform uefi -o main.efi
 ```
 
 Pipeline: `.rt` → RTBC → **NativeCodeGen** (`ObjectFile`) → **Linker** (PE / ELF / Mach-O / EFI / raw).
+
+### Vendored TinyCC backend
+
+RayTask vendors TinyCC in `tcc/` and compiles `libtcc` during the normal Cargo build. This gives the project an embedded C compiler/backend that can be used in two ways:
+
+- `raytask build ... --target native` tries the embedded TCC backend before falling back to external host compilers.
+- `raytask tcc ...` invokes the bundled TinyCC bridge directly for compiling or running C sources.
+
+Example:
+
+```bash
+raytask tcc examples/tcc/hello.c -o hello.exe
+raytask tcc -run examples/tcc/hello.c -- demo
+```
 
 - Host OS images package the RayTask runtime stub with embedded `.rtbc` when the stub is available.
 - UEFI images include a freestanding C mini-interpreter (`dist/*_native/*_uefi.c`); `clang` can produce a full `.efi`, otherwise a PE32+ EFI shell with payload is written.

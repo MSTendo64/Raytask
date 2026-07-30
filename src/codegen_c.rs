@@ -213,41 +213,137 @@ impl CCodegen {
         }
 
         // ---- Async / Task ----
-        self.writeln("typedef struct RtTask {");
+        self.writeln("typedef struct RtCancellationToken RtCancellationToken;");
+        self.writeln("typedef struct RtTask RtTask;");
+        self.writeln("struct RtTask {");
         self.writeln("  int ready;");
+        self.writeln("  int failed;");
+        self.writeln("  const char* error;");
         self.writeln("  void* result;");
         self.writeln("  int delay_ms;");
-        self.writeln("} RtTask;");
+        self.writeln("  RtCancellationToken* cancel_token;");
+        self.writeln("};");
+        self.writeln("struct RtCancellationToken {");
+        self.writeln("  int is_cancelled;");
+        self.writeln("  RtTask** tasks;");
+        self.writeln("  int task_count;");
+        self.writeln("  int task_cap;");
+        self.writeln("};");
+        self.writeln("typedef struct RtCancellationTokenSource { RtCancellationToken* token; } RtCancellationTokenSource;");
+        self.writeln("typedef struct RtTaskGroup { RtCancellationToken* token; RtTask** tasks; int task_count; int task_cap; } RtTaskGroup;");
+        self.writeln("static void rt_task_link_token(RtTask* task, RtCancellationToken* token) {");
+        self.writeln("  if (!task || !token) return;");
+        self.writeln("  task->cancel_token = token;");
+        self.writeln("  if (token->task_count >= token->task_cap) {");
+        self.writeln("    int next = token->task_cap ? token->task_cap * 2 : 4;");
+        self.writeln("    token->tasks = (RtTask**)realloc(token->tasks, (size_t)next * sizeof(RtTask*));");
+        self.writeln("    token->task_cap = next;");
+        self.writeln("  }");
+        self.writeln("  token->tasks[token->task_count++] = task;");
+        self.writeln("}");
+        self.writeln("static RtTask* rt_task_pending(RtCancellationToken* token) {");
+        if freestanding {
+            self.writeln("  static RtTask pool[32]; static int pi = 0;");
+            self.writeln("  RtTask* t = &pool[pi++ % 32]; memset(t, 0, sizeof(*t)); rt_task_link_token(t, token); return t;");
+        } else if gc {
+            self.writeln("  RtTask* t = (RtTask*)rt_gc_alloc(sizeof(RtTask)); memset(t, 0, sizeof(*t)); rt_task_link_token(t, token); return t;");
+        } else {
+            self.writeln("  RtTask* t = (RtTask*)calloc(1, sizeof(RtTask)); rt_task_link_token(t, token); return t;");
+        }
+        self.writeln("}");
         self.writeln("static RtTask* rt_task_ready(void* result) {");
         if freestanding {
             self.writeln("  static RtTask pool[32]; static int pi = 0;");
-            self.writeln("  RtTask* t = &pool[pi++ % 32]; t->ready = 1; t->result = result; t->delay_ms = 0; return t;");
+            self.writeln("  RtTask* t = &pool[pi++ % 32]; memset(t, 0, sizeof(*t)); t->ready = 1; t->result = result; return t;");
         } else if gc {
             self.writeln("  RtTask* t = (RtTask*)rt_gc_alloc(sizeof(RtTask));");
-            self.writeln("  t->ready = 1; t->result = result; t->delay_ms = 0; return t;");
+            self.writeln("  memset(t, 0, sizeof(*t)); t->ready = 1; t->result = result; return t;");
         } else {
             self.writeln("  RtTask* t = (RtTask*)calloc(1, sizeof(RtTask));");
-            self.writeln("  t->ready = 1; t->result = result; t->delay_ms = 0; return t;");
+            self.writeln("  t->ready = 1; t->result = result; return t;");
         }
+        self.writeln("}");
+        self.writeln("static RtTask* rt_task_fail(const char* error) {");
+        self.writeln("  RtTask* t = rt_task_ready(NULL); t->failed = 1; t->error = error; return t;");
+        self.writeln("}");
+        self.writeln("static void rt_cancel_token(RtCancellationToken* token) {");
+        self.writeln("  if (!token) return;");
+        self.writeln("  token->is_cancelled = 1;");
+        self.writeln("  for (int i = 0; i < token->task_count; ++i) {");
+        self.writeln("    RtTask* t = token->tasks[i];");
+        self.writeln("    if (t && !t->ready) { t->ready = 1; t->failed = 1; t->error = \"operation cancelled\"; }");
+        self.writeln("  }");
         self.writeln("}");
         self.writeln("static RtTask* Task_Delay(int ms) {");
         if freestanding {
             self.writeln("  static RtTask pool[8]; static int pi = 0;");
-            self.writeln("  RtTask* t = &pool[pi++ % 8]; t->ready = 0; t->result = NULL; t->delay_ms = ms; return t;");
+            self.writeln("  RtTask* t = &pool[pi++ % 8]; memset(t, 0, sizeof(*t)); t->delay_ms = ms; return t;");
         } else if gc {
-            self.writeln("  RtTask* t = (RtTask*)rt_gc_alloc(sizeof(RtTask));");
-            self.writeln("  t->ready = 0; t->result = NULL; t->delay_ms = ms; return t;");
+            self.writeln("  RtTask* t = rt_task_pending(NULL);");
+            self.writeln("  t->delay_ms = ms; return t;");
         } else {
-            self.writeln("  RtTask* t = (RtTask*)calloc(1, sizeof(RtTask));");
-            self.writeln("  t->ready = 0; t->result = NULL; t->delay_ms = ms; return t;");
+            self.writeln("  RtTask* t = rt_task_pending(NULL);");
+            self.writeln("  t->delay_ms = ms; return t;");
         }
         self.writeln("}");
         self.writeln("static void* rt_await(RtTask* t) {");
         self.writeln("  if (!t) return NULL;");
+        self.writeln("  if (t->cancel_token && t->cancel_token->is_cancelled && !t->ready) { t->ready = 1; t->failed = 1; t->error = \"operation cancelled\"; }");
         self.writeln("  if (!t->ready && t->delay_ms > 0) { rt_sleep(t->delay_ms); t->ready = 1; }");
         self.writeln("  while (!t->ready) { /* cooperative spin */ }");
+        self.writeln("  if (t->failed) return NULL;");
         self.writeln("  return t->result;");
         self.writeln("}");
+        self.writeln("static RtTask* Task_WhenAll(RtTask** tasks, int count) {");
+        self.writeln("  for (int i = 0; i < count; ++i) { if (tasks[i]) rt_await(tasks[i]); if (tasks[i] && tasks[i]->failed) return rt_task_fail(tasks[i]->error); }");
+        self.writeln("  return rt_task_ready(NULL);");
+        self.writeln("}");
+        self.writeln("static RtTask* Task_WhenAny(RtTask** tasks, int count) {");
+        self.writeln("  if (count <= 0) return rt_task_ready(NULL);");
+        self.writeln("  if (tasks[0]) rt_await(tasks[0]);");
+        self.writeln("  return tasks[0] && tasks[0]->failed ? rt_task_fail(tasks[0]->error) : rt_task_ready(tasks[0] ? tasks[0]->result : NULL);");
+        self.writeln("}");
+        self.writeln("static RtCancellationTokenSource* CancellationTokenSource_New(void) {");
+        if freestanding {
+            self.writeln("  static RtCancellationTokenSource src_pool[8]; static RtCancellationToken token_pool[8]; static int pi = 0;");
+            self.writeln("  RtCancellationTokenSource* s = &src_pool[pi % 8]; RtCancellationToken* t = &token_pool[pi % 8]; ++pi; memset(s, 0, sizeof(*s)); memset(t, 0, sizeof(*t)); s->token = t; return s;");
+        } else if gc {
+            self.writeln("  RtCancellationTokenSource* s = (RtCancellationTokenSource*)rt_gc_alloc(sizeof(RtCancellationTokenSource));");
+            self.writeln("  RtCancellationToken* t = (RtCancellationToken*)rt_gc_alloc(sizeof(RtCancellationToken));");
+            self.writeln("  memset(s, 0, sizeof(*s)); memset(t, 0, sizeof(*t)); s->token = t; return s;");
+        } else {
+            self.writeln("  RtCancellationTokenSource* s = (RtCancellationTokenSource*)calloc(1, sizeof(RtCancellationTokenSource));");
+            self.writeln("  RtCancellationToken* t = (RtCancellationToken*)calloc(1, sizeof(RtCancellationToken));");
+            self.writeln("  s->token = t; return s;");
+        }
+        self.writeln("}");
+        self.writeln("static RtCancellationToken* CancellationTokenSource_Token(RtCancellationTokenSource* src) { return src ? src->token : NULL; }");
+        self.writeln("static void CancellationTokenSource_Cancel(RtCancellationTokenSource* src) { if (src) rt_cancel_token(src->token); }");
+        self.writeln("static bool CancellationToken_IsCancellationRequested(RtCancellationToken* token) { return token && token->is_cancelled; }");
+        self.writeln("static void CancellationToken_ThrowIfCancellationRequested(RtCancellationToken* token) { (void)token; }");
+        self.writeln("static RtTaskGroup* TaskGroup_New(void) {");
+        if freestanding {
+            self.writeln("  static RtTaskGroup groups[8]; static RtCancellationToken tokens[8]; static int gi = 0;");
+            self.writeln("  RtTaskGroup* g = &groups[gi % 8]; RtCancellationToken* t = &tokens[gi % 8]; ++gi; memset(g, 0, sizeof(*g)); memset(t, 0, sizeof(*t)); g->token = t; return g;");
+        } else if gc {
+            self.writeln("  RtTaskGroup* g = (RtTaskGroup*)rt_gc_alloc(sizeof(RtTaskGroup));");
+            self.writeln("  RtCancellationToken* t = (RtCancellationToken*)rt_gc_alloc(sizeof(RtCancellationToken));");
+            self.writeln("  memset(g, 0, sizeof(*g)); memset(t, 0, sizeof(*t)); g->token = t; return g;");
+        } else {
+            self.writeln("  RtTaskGroup* g = (RtTaskGroup*)calloc(1, sizeof(RtTaskGroup));");
+            self.writeln("  RtCancellationToken* t = (RtCancellationToken*)calloc(1, sizeof(RtCancellationToken));");
+            self.writeln("  g->token = t; return g;");
+        }
+        self.writeln("}");
+        self.writeln("static RtTask* TaskGroup_Run(RtTaskGroup* group, RtTask* task) {");
+        self.writeln("  if (!group) return task;");
+        self.writeln("  if (group->task_count >= group->task_cap) { int next = group->task_cap ? group->task_cap * 2 : 4; group->tasks = (RtTask**)realloc(group->tasks, (size_t)next * sizeof(RtTask*)); group->task_cap = next; }");
+        self.writeln("  if (task) { rt_task_link_token(task, group->token); group->tasks[group->task_count++] = task; }");
+        self.writeln("  return task;");
+        self.writeln("}");
+        self.writeln("static void TaskGroup_Cancel(RtTaskGroup* group) { if (group) rt_cancel_token(group->token); }");
+        self.writeln("static RtTask* TaskGroup_WhenAll(RtTaskGroup* group) { return group ? Task_WhenAll(group->tasks, group->task_count) : rt_task_ready(NULL); }");
+        self.writeln("static RtTask* TaskGroup_WhenAny(RtTaskGroup* group) { return group ? Task_WhenAny(group->tasks, group->task_count) : rt_task_ready(NULL); }");
         self.writeln("#define await(t) rt_await((RtTask*)(t))");
 
         if !freestanding {
@@ -1091,6 +1187,26 @@ fn expr_to_c(
                     if obj == "Task" && field == "Delay" {
                         return format!("Task_Delay({})", a.join(", "));
                     }
+                    if obj == "Task" && (field == "WhenAll" || field == "WhenAny") {
+                        if let Some(first) = args.first() {
+                            if let Expr::ArrayLit(items, _) = &first.value {
+                                let elems: Vec<_> = items.iter().map(ex).collect();
+                                let fn_name = if field == "WhenAll" { "Task_WhenAll" } else { "Task_WhenAny" };
+                                return format!(
+                                    "{}((RtTask*[]){{ {} }}, {})",
+                                    fn_name,
+                                    elems.join(", "),
+                                    items.len()
+                                );
+                            }
+                        }
+                    }
+                    if obj == "CancellationTokenSource" && field == "New" {
+                        return "CancellationTokenSource_New()".into();
+                    }
+                    if obj == "TaskGroup" && field == "New" {
+                        return "TaskGroup_New()".into();
+                    }
                     if (obj == "Gc" || obj == "GC") && field == "Collect" {
                         return "Gc_Collect()".into();
                     }
@@ -1107,6 +1223,14 @@ fn expr_to_c(
             format!("{}({})", ex(callee), a.join(", "))
         }
         Expr::Member { object, field, .. } => {
+            if let Some(ty) = lookup_type(object, types, vars, current) {
+                if ty == "CancellationTokenSource" && field == "Token" {
+                    return format!("CancellationTokenSource_Token({})", ex(object));
+                }
+                if ty == "CancellationToken" && field == "IsCancellationRequested" {
+                    return format!("CancellationToken_IsCancellationRequested({})", ex(object));
+                }
+            }
             let arrow = matches!(object.as_ref(), Expr::This(_))
                 || lookup_type(object, types, vars, current).is_some();
             if arrow {

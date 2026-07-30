@@ -573,16 +573,6 @@ impl<'a> Lexer<'a> {
         }
 
         if is_float {
-            let text = format!("{}.{}", int_part, frac);
-            // frac may contain exponent already appended oddly — rebuild carefully
-            let text = if frac.starts_with('e') || frac.starts_with('E') {
-                format!("{}{}", int_part, frac)
-            } else if frac.is_empty() {
-                int_part.clone()
-            } else {
-                // check if frac has e in middle
-                text
-            };
             let cleaned = {
                 let mut s = int_part.clone();
                 if !frac.is_empty() && !frac.starts_with('e') && !frac.starts_with('E') {

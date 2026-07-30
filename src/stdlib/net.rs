@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
-use std::rc::Rc;
 use std::time::Duration;
 
 fn skip_module(args: &[Value]) -> &[Value] {
@@ -84,7 +83,7 @@ pub fn http_post(args: &[Value]) -> RuntimeResult<Value> {
 
 pub fn tcp_connect(args: &[Value]) -> RuntimeResult<Value> {
     let (host, port) = match args.first() {
-        Some(Value::Object(o)) => {
+        Some(Value::Object(_)) => {
             let host = args.get(1).map(|v| v.as_string()).unwrap_or_else(|| "127.0.0.1".into());
             let port = args.get(2).map(|v| v.as_int()).transpose()?.unwrap_or(80);
             (host, port)

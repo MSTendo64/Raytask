@@ -1,8 +1,8 @@
 const { spawn } = require("child_process");
 const vscode = require("vscode");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
+const { detectContext } = require("./project");
 
 /**
  * Run `raytask check` and parse `line:col: message` diagnostics.
@@ -14,15 +14,22 @@ const path = require("path");
 function runDiagnostics(doc, raytaskPath, output) {
   return new Promise((resolve) => {
     const file = doc.uri.fsPath;
-    // Prefer checking from a temp file so unsaved buffer is included
-    const tmp = path.join(
-      os.tmpdir(),
-      `raytask-check-${process.pid}-${Date.now()}.rt`
-    );
-    fs.writeFileSync(tmp, doc.getText(), "utf8");
+    const ctx = detectContext(doc.uri);
+    const workDir = ctx.kind === "project" ? ctx.root : path.dirname(file);
+    const useShadowCopy = doc.isDirty;
+    const checkTarget = useShadowCopy
+      ? path.join(
+          path.dirname(file),
+          `.${path.basename(file, ".rt")}.raytask-check-${process.pid}-${Date.now()}.rt`
+        )
+      : file;
 
-    const child = spawn(raytaskPath, ["check", tmp], {
-      cwd: path.dirname(file),
+    if (useShadowCopy) {
+      fs.writeFileSync(checkTarget, doc.getText(), "utf8");
+    }
+
+    const child = spawn(raytaskPath, ["check", checkTarget], {
+      cwd: workDir,
       shell: process.platform === "win32",
     });
 
@@ -37,7 +44,7 @@ function runDiagnostics(doc, raytaskPath, output) {
 
     child.on("error", (err) => {
       try {
-        fs.unlinkSync(tmp);
+        if (useShadowCopy) fs.unlinkSync(checkTarget);
       } catch (_) {}
       const d = new vscode.Diagnostic(
         new vscode.Range(0, 0, 0, 1),
@@ -49,11 +56,11 @@ function runDiagnostics(doc, raytaskPath, output) {
 
     child.on("close", () => {
       try {
-        fs.unlinkSync(tmp);
+        if (useShadowCopy) fs.unlinkSync(checkTarget);
       } catch (_) {}
       const text = `${stdout}\n${stderr}`;
       if (output) {
-        output.appendLine(`raytask check ${file}`);
+        output.appendLine(`raytask check ${checkTarget}`);
         if (text.trim()) output.appendLine(text.trim());
       }
       resolve(parseDiagnostics(text, doc));

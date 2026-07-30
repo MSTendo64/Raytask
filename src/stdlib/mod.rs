@@ -26,9 +26,7 @@ mod extra;
 use crate::error::RuntimeResult;
 use crate::value::{ObjectInstance, Value};
 use ids::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 /// Resolve a built-in global by name.
 pub fn builtin_global(name: &str) -> Option<Value> {
@@ -73,7 +71,9 @@ pub fn builtin_global(name: &str) -> Option<Value> {
         "Http" => Value::TypeModule("Http".into()),
         "HttpServer" => Value::TypeModule("HttpServer".into()),
         "Task" => Value::TypeModule("Task".into()),
+        "CancellationTokenSource" => Value::TypeModule("CancellationTokenSource".into()),
         "Thread" => Value::TypeModule("Thread".into()),
+        "TaskGroup" => Value::TypeModule("TaskGroup".into()),
         "Gc" | "GC" => Value::TypeModule("Gc".into()),
         "DateTime" => Value::TypeModule("DateTime".into()),
         "Random" => Value::TypeModule("Random".into()),
@@ -207,6 +207,25 @@ pub fn get_property(obj: &Value, name: &str) -> RuntimeResult<Value> {
                     "Recv" => Ok(Value::Native(CHANNEL_RECV)),
                     "TryRecv" => Ok(Value::Native(CHANNEL_TRY_RECV)),
                     "Close" => Ok(Value::Native(CHANNEL_CLOSE)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "CancellationTokenSource" => match name {
+                    "Token" => Ok(o.fields.get("token").cloned().unwrap_or(Value::Null)),
+                    "Cancel" => Ok(Value::Native(CTS_CANCEL)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "CancellationToken" => match name {
+                    "IsCancellationRequested" => {
+                        Ok(o.fields.get("isCancelled").cloned().unwrap_or(Value::Bool(false)))
+                    }
+                    "ThrowIfCancellationRequested" => Ok(Value::Native(TOKEN_THROW_IF_CANCELLED)),
+                    _ => Err(undef(&o.class_name, name)),
+                },
+                "TaskGroup" => match name {
+                    "Run" => Ok(Value::Native(TASKGROUP_RUN)),
+                    "Cancel" => Ok(Value::Native(TASKGROUP_CANCEL)),
+                    "WhenAll" => Ok(Value::Native(TASKGROUP_WHEN_ALL)),
+                    "WhenAny" => Ok(Value::Native(TASKGROUP_WHEN_ANY)),
                     _ => Err(undef(&o.class_name, name)),
                 },
                 "TimeSpan" => match name {
@@ -394,8 +413,11 @@ fn static_member(module: &str, name: &str) -> RuntimeResult<Value> {
         ("Task", "Delay") => TASK_DELAY,
         ("Task", "Run") => TASK_RUN,
         ("Task", "WhenAll") => TASK_WHEN_ALL,
+        ("Task", "WhenAny") => TASK_WHEN_ANY,
+        ("CancellationTokenSource", "New") => CTS_NEW,
         ("Thread", "Run") => THREAD_RUN,
         ("Thread", "Sleep") => THREAD_SLEEP,
+        ("TaskGroup", "New") => TASKGROUP_NEW,
         ("Mutex", "New") => MUTEX_NEW,
         ("Mutex", "Lock") => MUTEX_LOCK,
         ("Mutex", "Unlock") => MUTEX_UNLOCK,
@@ -720,6 +742,45 @@ pub fn call_native(id: usize, args: &[Value]) -> RuntimeResult<Value> {
                 crate::gc::alloc_array(Vec::new()),
             )))
         }
+        TASK_WHEN_ANY => {
+            Ok(Value::Task(crate::async_rt::TaskInner::new_ready(Value::Null)))
+        }
+        CTS_NEW => Ok(crate::gc::alloc_object(ObjectInstance {
+            class_name: "CancellationTokenSource".into(),
+            fields: std::collections::HashMap::from([(
+                "token".into(),
+                crate::gc::alloc_object(ObjectInstance {
+                    class_name: "CancellationToken".into(),
+                    fields: std::collections::HashMap::from([(
+                        "isCancelled".into(),
+                        Value::Bool(false),
+                    )]),
+                    class_index: None,
+                    finalized: false,
+                }),
+            )]),
+            class_index: None,
+            finalized: false,
+        })),
+        CTS_CANCEL => Ok(Value::Null),
+        CTS_TOKEN => Ok(Value::Null),
+        TOKEN_IS_CANCELLED => Ok(Value::Bool(false)),
+        TOKEN_THROW_IF_CANCELLED => Ok(Value::Null),
+        TASKGROUP_NEW => Ok(crate::gc::alloc_object(ObjectInstance {
+            class_name: "TaskGroup".into(),
+            fields: std::collections::HashMap::from([(
+                "tasks".into(),
+                crate::gc::alloc_array(Vec::new()),
+            )]),
+            class_index: None,
+            finalized: false,
+        })),
+        TASKGROUP_RUN => Ok(Value::Task(crate::async_rt::TaskInner::new_ready(Value::Null))),
+        TASKGROUP_CANCEL => Ok(Value::Null),
+        TASKGROUP_WHEN_ALL => Ok(Value::Task(crate::async_rt::TaskInner::new_ready(
+            crate::gc::alloc_array(Vec::new()),
+        ))),
+        TASKGROUP_WHEN_ANY => Ok(Value::Task(crate::async_rt::TaskInner::new_ready(Value::Null))),
         GC_COLLECT | GC_STATS => Ok(Value::Null),
 
         LOG_INFO => logging::log("INFO", args),

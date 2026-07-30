@@ -3,9 +3,7 @@
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::value::Value;
 use serde_json::Value as JsonValue;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 fn skip_module(args: &[Value]) -> &[Value] {
     if matches!(args.first(), Some(Value::TypeModule(_))) {

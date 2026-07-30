@@ -2,11 +2,9 @@
 
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::value::{ObjectInstance, Value};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn path_arg(args: &[Value], idx: usize) -> String {

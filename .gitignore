@@ -1,7 +1,27 @@
 # Rust
 /target/
+/target-tcc-smoke/
 **/*.rs.bk
 *.pdb
+
+# Vendored TinyCC build leftovers
+/tcc/config.h
+/tcc/config.mak
+/tcc/config.texi
+/tcc/*.o
+/tcc/*.obj
+/tcc/*.exe
+/tcc/*.dll
+/tcc/*.lib
+/tcc/*.def
+/tcc/libtcc.a
+/tcc/tcc
+/tcc/win32/*.exe
+/tcc/win32/*.dll
+/tcc/win32/*.lib
+/tcc/win32/lib/*.a
+/tcc/win32/lib/*.o
+/tcc/win32/libtcc/
 
 # RayTask build outputs
 **/dist/
@@ -9,6 +29,9 @@
 **/*.rtdbg
 **/*.c
 !**/*.c.template
+!tcc/**/*.c
+!examples/**/*.c
+!**/native_rt/**/*.c
 **/*.exe
 **/*.efi
 **/*.elf

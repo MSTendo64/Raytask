@@ -30,6 +30,7 @@ pub mod span;
 pub mod stdlib;
 pub mod stdlib_types;
 pub mod targets;
+pub mod tcc;
 pub mod token;
 pub mod types;
 pub mod value;
@@ -42,10 +43,10 @@ use crate::codegen_c::{CCodegen, CodegenOptions, RuntimeProfile};
 use crate::compiler::Compiler;
 use crate::error::CompileResult;
 use crate::mono::monomorphize;
-use crate::resolve::resolve_program;
-use crate::sema::{typecheck, typecheck_or_err, TypeCheckReport};
-use crate::vm::Vm;
 use crate::bytecode::Module;
+use crate::sema::{typecheck_or_err, TypeCheckReport};
+use crate::vm::Vm;
+use std::fmt::Write as _;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +292,140 @@ pub fn run_bytecode(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+pub fn inspect_bytecode(
+    bytes: &[u8],
+    disassemble: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let module = deserialize_module(bytes)?;
+    let version = if bytes.len() >= 6 {
+        u16::from_le_bytes([bytes[4], bytes[5]])
+    } else {
+        0
+    };
+    let mut out = String::new();
+    writeln!(&mut out, "RTBC").ok();
+    writeln!(&mut out, "  version: {}", version).ok();
+    writeln!(&mut out, "  size: {} bytes", bytes.len()).ok();
+    writeln!(&mut out, "  main_chunk: {}", module.main_chunk).ok();
+    writeln!(&mut out, "  stdlib_enabled: {}", module.stdlib_enabled).ok();
+    writeln!(&mut out, "  globals: {}", module.globals.len()).ok();
+    for (i, g) in module.globals.iter().enumerate() {
+        writeln!(&mut out, "    [{}] {}", i, g).ok();
+    }
+    writeln!(&mut out, "  classes: {}", module.classes.len()).ok();
+    for (i, class) in module.classes.iter().enumerate() {
+        writeln!(
+            &mut out,
+            "    [{}] {} fields={} methods={} ctor={:?} base={:?} dtor={:?}",
+            i,
+            class.name,
+            class.fields.len(),
+            class.methods.len(),
+            class.constructor,
+            class.base,
+            class.destructor
+        )
+        .ok();
+    }
+    writeln!(&mut out, "  chunks: {}", module.chunks.len()).ok();
+    for (i, chunk) in module.chunks.iter().enumerate() {
+        writeln!(
+            &mut out,
+            "    [{}] {} arity={} locals={} async={} code={} consts={} source={}",
+            i,
+            chunk.name,
+            chunk.arity,
+            chunk.local_count,
+            chunk.is_async,
+            chunk.code.len(),
+            chunk.constants.len(),
+            chunk.source.as_deref().unwrap_or("-")
+        )
+        .ok();
+        if !chunk.constants.is_empty() {
+            for (ci, constant) in chunk.constants.iter().enumerate() {
+                writeln!(&mut out, "      const[{}] = {:?}", ci, constant).ok();
+            }
+        }
+        if disassemble {
+            disassemble_chunk(&mut out, chunk);
+        }
+    }
+    Ok(out)
+}
+
+fn disassemble_chunk(out: &mut String, chunk: &crate::bytecode::Chunk) {
+    use crate::bytecode::Op;
+
+    writeln!(out, "      code:").ok();
+    let mut ip = 0usize;
+    while ip < chunk.code.len() {
+        let line = chunk.lines.get(ip).copied().unwrap_or(0);
+        let byte = chunk.code[ip];
+        let Some(op) = Op::from_byte(byte) else {
+            writeln!(out, "        {:04} L{:04}  <unknown {}>", ip, line, byte).ok();
+            ip += 1;
+            continue;
+        };
+        match op {
+            Op::Constant
+            | Op::GetLocal
+            | Op::SetLocal
+            | Op::GetGlobal
+            | Op::SetGlobal
+            | Op::DefineGlobal
+            | Op::Call
+            | Op::NewObject
+            | Op::NewArray
+            | Op::IncLocal
+            | Op::DecLocal
+            | Op::GetUpvalue
+            | Op::SetUpvalue => {
+                let arg = chunk.code.get(ip + 1).copied().unwrap_or(0);
+                writeln!(out, "        {:04} L{:04}  {:<14} {}", ip, line, op.name(), arg).ok();
+                ip += 2;
+            }
+            Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue | Op::Loop | Op::TryBegin => {
+                let hi = chunk.code.get(ip + 1).copied().unwrap_or(0) as u16;
+                let lo = chunk.code.get(ip + 2).copied().unwrap_or(0) as u16;
+                let arg = (hi << 8) | lo;
+                writeln!(out, "        {:04} L{:04}  {:<14} {}", ip, line, op.name(), arg).ok();
+                ip += 3;
+            }
+            Op::MakeClosure => {
+                let captures = chunk.code.get(ip + 1).copied().unwrap_or(0) as usize;
+                writeln!(
+                    out,
+                    "        {:04} L{:04}  {:<14} captures={}",
+                    ip,
+                    line,
+                    op.name(),
+                    captures
+                )
+                .ok();
+                ip += 2;
+                for cap in 0..captures {
+                    let is_local = chunk.code.get(ip).copied().unwrap_or(0);
+                    let index = chunk.code.get(ip + 1).copied().unwrap_or(0);
+                    writeln!(
+                        out,
+                        "                     capture[{}] {} {}",
+                        cap,
+                        if is_local == 1 { "local" } else { "upvalue" },
+                        index
+                    )
+                    .ok();
+                    ip += 2;
+                }
+            }
+            _ => {
+                writeln!(out, "        {:04} L{:04}  {}", ip, line, op.name()).ok();
+                ip += 1;
+            }
+        }
+    }
+}
+
 pub fn transpile_c(source: &str) -> CompileResult<String> {
     let program = parse_source(source)?;
     typecheck_or_err(&program)?;
@@ -366,6 +501,21 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             let exe_str = exe.display().to_string();
             let out_str = out.display().to_string();
             let link_libs = crate::codegen_c::collect_link_libs(&program);
+            match crate::tcc::compile_c_to_path(
+                &out,
+                &exe,
+                crate::tcc::OutputKind::Exe,
+                options.debug,
+                &link_libs,
+            ) {
+                Ok(()) => {
+                    emit_symbols(Path::new(&exe_str), &module)?;
+                    return Ok(exe_str);
+                }
+                Err(err) => {
+                    eprintln!("note: embedded TCC backend failed, falling back: {err}");
+                }
+            }
             for cc in ["gcc", "clang", "cl"] {
                 let mut cmd = std::process::Command::new(cc);
                 if cc == "cl" {

@@ -209,25 +209,6 @@ fn load_stub_bytes(platform: Platform) -> Result<Vec<u8>, LinkError> {
     app_build::load_runtime_stub(platform).map_err(|e| e.to_string().into())
 }
 
-fn find_repo_root() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-        {
-            if root.join("Cargo.toml").exists() {
-                return Some(root.to_path_buf());
-            }
-        }
-    }
-    let cwd = std::env::current_dir().ok()?;
-    if cwd.join("Cargo.toml").exists() {
-        return Some(cwd);
-    }
-    None
-}
-
 fn try_clang_uefi(c_path: &Path, out: &Path) -> bool {
     let status = Command::new("clang")
         .arg("-target")

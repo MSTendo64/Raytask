@@ -2,9 +2,7 @@
 
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::value::{ObjectInstance, Value};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub fn regex_new(args: &[Value]) -> RuntimeResult<Value> {
     let pat = args.first().map(|v| v.as_string()).unwrap_or_default();

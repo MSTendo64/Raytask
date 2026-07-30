@@ -7,8 +7,29 @@ export class Task {
     export static Task Run(fn: dyn);
     /// Wait until all tasks complete; result is an array of results.
     export static Task WhenAll(tasks: dyn[]);
+    /// Complete when any task completes; result is the completed task result.
+    export static Task WhenAny(tasks: dyn[]);
 }
 
 export class Task<T> {
     property Result: T { get; }
+}
+
+export class CancellationToken {
+    property IsCancellationRequested: bool { get; }
+    void ThrowIfCancellationRequested();
+}
+
+export class CancellationTokenSource {
+    export static CancellationTokenSource New();
+    property Token: CancellationToken { get; }
+    void Cancel();
+}
+
+export class TaskGroup {
+    export static TaskGroup New();
+    Task Run(fn: dyn);
+    Task WhenAll();
+    Task WhenAny();
+    void Cancel();
 }

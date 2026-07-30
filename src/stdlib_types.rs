@@ -11,7 +11,9 @@ fn empty_class(name: &str) -> TypeDef {
         kind: TypeDefKind::Class,
         type_params: vec![],
         fields: HashMap::new(),
+        static_fields: HashMap::new(),
         properties: HashMap::new(),
+        static_properties: HashMap::new(),
         methods: HashMap::new(),
         constructors: vec![],
         bases: vec![],
@@ -557,7 +559,98 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
             true,
         ),
     );
+    task.methods.insert(
+        "WhenAny".into(),
+        method(
+            "WhenAny",
+            vec![(
+                "tasks",
+                Ty::Array {
+                    elem: Box::new(Ty::Dyn),
+                    dims: 1,
+                },
+            )],
+            Ty::Generic {
+                name: "Task".into(),
+                args: vec![Ty::Dyn],
+            },
+            true,
+        ),
+    );
     types.insert("Task".into(), task);
+
+    let mut token = empty_class("CancellationToken");
+    token.properties.insert("IsCancellationRequested".into(), Ty::Bool);
+    token.methods.insert(
+        "ThrowIfCancellationRequested".into(),
+        method("ThrowIfCancellationRequested", vec![], Ty::Void, false),
+    );
+    types.insert("CancellationToken".into(), token);
+
+    let mut cts = empty_class("CancellationTokenSource");
+    cts.properties
+        .insert("Token".into(), Ty::Named("CancellationToken".into()));
+    cts.methods.insert(
+        "New".into(),
+        method(
+            "New",
+            vec![],
+            Ty::Named("CancellationTokenSource".into()),
+            true,
+        ),
+    );
+    cts.methods
+        .insert("Cancel".into(), method("Cancel", vec![], Ty::Void, false));
+    types.insert("CancellationTokenSource".into(), cts);
+
+    let mut task_group = empty_class("TaskGroup");
+    task_group.methods.insert(
+        "New".into(),
+        method("New", vec![], Ty::Named("TaskGroup".into()), true),
+    );
+    task_group.methods.insert(
+        "Run".into(),
+        method(
+            "Run",
+            vec![("fn", Ty::Dyn)],
+            Ty::Generic {
+                name: "Task".into(),
+                args: vec![Ty::Dyn],
+            },
+            false,
+        ),
+    );
+    task_group.methods.insert(
+        "WhenAll".into(),
+        method(
+            "WhenAll",
+            vec![],
+            Ty::Generic {
+                name: "Task".into(),
+                args: vec![Ty::Array {
+                    elem: Box::new(Ty::Dyn),
+                    dims: 1,
+                }],
+            },
+            false,
+        ),
+    );
+    task_group.methods.insert(
+        "WhenAny".into(),
+        method(
+            "WhenAny",
+            vec![],
+            Ty::Generic {
+                name: "Task".into(),
+                args: vec![Ty::Dyn],
+            },
+            false,
+        ),
+    );
+    task_group
+        .methods
+        .insert("Cancel".into(), method("Cancel", vec![], Ty::Void, false));
+    types.insert("TaskGroup".into(), task_group);
 
     let mut gc = empty_class("Gc");
     gc.methods.insert(

@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use raytask::app_build::Platform;
 use raytask::{
-    compile_file, parse_file, run_file_with, run_source, transpile_c, BuildOptions, Optimize,
-    RunOptions, Target,
+    compile_file, inspect_bytecode, parse_file, run_file_with, run_source, transpile_c,
+    BuildOptions, Optimize, RunOptions, Target,
 };
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -181,6 +181,18 @@ enum Commands {
     Doc {
         #[arg(default_value = ".")]
         path: PathBuf,
+    },
+    /// Invoke vendored TinyCC through RayTask
+    Tcc {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Inspect a binary .rtbc file in human-readable form
+    InspectRtbc {
+        file: PathBuf,
+        /// Include disassembled chunk bytecode
+        #[arg(long)]
+        disassemble: bool,
     },
 }
 
@@ -516,6 +528,15 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Dap => {
             raytask::dap::run_dap()?;
+        }
+        Commands::Tcc { args } => {
+            raytask::tcc::run_tcc_cli(&args)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        }
+        Commands::InspectRtbc { file, disassemble } => {
+            let bytes = std::fs::read(&file)?;
+            let text = inspect_bytecode(&bytes, disassemble)?;
+            print!("{}", text);
         }
         Commands::Symbols { file, output } => {
             let program = parse_file(&file)?;

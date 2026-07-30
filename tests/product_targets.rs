@@ -111,6 +111,10 @@ void Main() {
     assert!(c.contains("Gc_Collect"));
     assert!(c.contains("rt_gc_alloc") || c.contains("rt_zalloc"));
     assert!(c.contains("RtTask"));
+    assert!(c.contains("Task_WhenAll"));
+    assert!(c.contains("Task_WhenAny"));
+    assert!(c.contains("CancellationTokenSource_New"));
+    assert!(c.contains("TaskGroup_New"));
 }
 
 #[test]
