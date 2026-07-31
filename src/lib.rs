@@ -1,5 +1,6 @@
 //! RayTask compiler library.
 
+pub mod abi;
 pub mod app_build;
 pub mod ast;
 pub mod async_rt;
@@ -16,10 +17,12 @@ pub mod ffi;
 pub mod ffi_bind;
 pub mod gc;
 pub mod lexer;
+pub mod link;
 pub mod linker;
 pub mod migrate;
 pub mod mono;
 pub mod native_codegen;
+pub mod native_triple;
 pub mod parser;
 pub mod preprocess;
 pub mod project;
@@ -27,6 +30,7 @@ pub mod registry;
 pub mod resolve;
 pub mod sema;
 pub mod span;
+pub mod ssa;
 pub mod stdlib;
 pub mod stdlib_types;
 pub mod targets;
@@ -39,8 +43,7 @@ pub mod web_runtime;
 
 use crate::app_build::{build_app, Platform};
 use crate::bytecode_format::{deserialize_module, serialize_module};
-use crate::codegen_c::{CCodegen, CodegenOptions, RuntimeProfile};
-use crate::compiler::Compiler;
+use crate::codegen_c::{CCodegen, CodegenOptions};
 use crate::error::CompileResult;
 use crate::mono::monomorphize;
 use crate::bytecode::Module;
@@ -126,6 +129,10 @@ pub struct BuildOptions {
     pub gc_stress: bool,
     pub debug: bool,
     pub platform: Platform,
+    /// CPU architecture for native / native-bin / link (default: host).
+    pub arch: crate::native_triple::Arch,
+    /// Prefer the built-in object linker after compiling to `.o` (freestanding / no CRT).
+    pub link_builtin: bool,
     pub output: Option<std::path::PathBuf>,
     /// Skip typechecker (not recommended)
     pub no_typecheck: bool,
@@ -142,10 +149,27 @@ impl Default for BuildOptions {
             gc_stress: false,
             debug: false,
             platform: Platform::Current,
+            arch: crate::native_triple::Arch::host(),
+            link_builtin: false,
             output: None,
             no_typecheck: false,
             no_stdlib: false,
         }
+    }
+}
+
+impl BuildOptions {
+    /// Resolved OS × arch triple for AOT / native-bin.
+    pub fn native_triple(&self) -> crate::native_triple::NativeTriple {
+        use crate::native_triple::{NativeTriple, OsKind};
+        let os = match self.platform {
+            Platform::Windows => OsKind::Windows,
+            Platform::Linux => OsKind::Linux,
+            Platform::Macos => OsKind::Macos,
+            Platform::Uefi => OsKind::Uefi,
+            Platform::Current => OsKind::host(),
+        };
+        NativeTriple::new(os, self.arch)
     }
 }
 
@@ -157,6 +181,8 @@ pub struct RunOptions {
     pub no_typecheck: bool,
     /// Disable built-in bstd.* imports, types, and runtime globals.
     pub no_stdlib: bool,
+    /// Optimization level when compiling from source.
+    pub optimize: Optimize,
 }
 
 impl Default for RunOptions {
@@ -166,6 +192,7 @@ impl Default for RunOptions {
             gc_stress: false,
             no_typecheck: false,
             no_stdlib: false,
+            optimize: Optimize::None,
         }
     }
 }
@@ -217,10 +244,19 @@ pub fn compile_bytecode(source: &str) -> CompileResult<Module> {
 }
 
 pub fn compile_bytecode_with_stdlib(source: &str, stdlib_enabled: bool) -> CompileResult<Module> {
+    compile_bytecode_optimized(source, stdlib_enabled, Optimize::None)
+}
+
+/// Compile source to a Module through the SSA pipeline at the given optimize level.
+pub fn compile_bytecode_optimized(
+    source: &str,
+    stdlib_enabled: bool,
+    optimize: Optimize,
+) -> CompileResult<Module> {
     let program = parse_source_with_stdlib(source, stdlib_enabled)?;
     crate::sema::typecheck_or_err_with_stdlib(&program, stdlib_enabled)?;
     let program = monomorphize(program);
-    Compiler::new().with_stdlib(stdlib_enabled).compile(&program)
+    crate::ssa::compile_via_ssa(&program, optimize, stdlib_enabled)
 }
 
 pub fn compile_bytecode_unchecked(source: &str) -> CompileResult<Module> {
@@ -231,9 +267,17 @@ pub fn compile_bytecode_unchecked_with_stdlib(
     source: &str,
     stdlib_enabled: bool,
 ) -> CompileResult<Module> {
+    compile_bytecode_unchecked_optimized(source, stdlib_enabled, Optimize::None)
+}
+
+pub fn compile_bytecode_unchecked_optimized(
+    source: &str,
+    stdlib_enabled: bool,
+    optimize: Optimize,
+) -> CompileResult<Module> {
     let program = parse_source_with_stdlib(source, stdlib_enabled)?;
     let program = monomorphize(program);
-    Compiler::new().with_stdlib(stdlib_enabled).compile(&program)
+    crate::ssa::compile_via_ssa(&program, optimize, stdlib_enabled)
 }
 
 pub fn run_source(source: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -242,9 +286,9 @@ pub fn run_source(source: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run_source_with(source: &str, opts: &RunOptions) -> Result<(), Box<dyn std::error::Error>> {
     let module = if opts.no_typecheck {
-        compile_bytecode_unchecked_with_stdlib(source, !opts.no_stdlib)?
+        compile_bytecode_unchecked_optimized(source, !opts.no_stdlib, opts.optimize)?
     } else {
-        compile_bytecode_with_stdlib(source, !opts.no_stdlib)?
+        compile_bytecode_optimized(source, !opts.no_stdlib, opts.optimize)?
     };
     crate::ffi::prepare_module_ffi(&module.ffi, None)?;
     let mut vm = Vm::with_gc(
@@ -269,7 +313,8 @@ pub fn run_file_with(path: &Path, opts: &RunOptions) -> Result<(), Box<dyn std::
         crate::sema::typecheck_or_err_with_stdlib(&program, !opts.no_stdlib)?;
     }
     let program = monomorphize(program);
-    let module = Compiler::new().with_stdlib(!opts.no_stdlib).compile(&program)?;
+    let module =
+        crate::ssa::compile_via_ssa_with_source(&program, opts.optimize, !opts.no_stdlib, Some(&path.display().to_string()))?;
     let base = path.parent();
     crate::ffi::prepare_module_ffi(&module.ffi, base)?;
     let mut vm = Vm::with_gc(
@@ -440,14 +485,6 @@ pub fn transpile_c_with(source: &str, opts: CodegenOptions) -> CompileResult<Str
     CCodegen::with_options(opts).generate(&program)
 }
 
-fn native_codegen_opts(options: &BuildOptions) -> CodegenOptions {
-    CodegenOptions {
-        profile: RuntimeProfile::Host,
-        gc: options.gc,
-        freestanding: false,
-    }
-}
-
 pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dyn std::error::Error>> {
     let path_buf = Path::new(path);
     let program = parse_file_with_stdlib(path_buf, !options.no_stdlib)?;
@@ -459,10 +496,12 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
         }
     }
     let program = monomorphize(program);
-    let mut module = Compiler::new()
-        .with_stdlib(!options.no_stdlib)
-        .with_source(path_buf.display().to_string())
-        .compile(&program)?;
+    let mut module = crate::ssa::compile_via_ssa_with_source(
+        &program,
+        options.optimize,
+        !options.no_stdlib,
+        Some(&path_buf.display().to_string()),
+    )?;
     crate::debug_symbols::stamp_source(&mut module, path_buf);
 
     let emit_symbols = |artifact: &Path, module: &Module| -> Result<(), Box<dyn std::error::Error>> {
@@ -492,98 +531,22 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             Ok(out.display().to_string())
         }
         Target::Native => {
-            let c = CCodegen::with_options(native_codegen_opts(options)).generate(&program)?;
-            let out = path_buf.with_extension("c");
-            std::fs::write(&out, &c)?;
-            let exe = options.output.clone().unwrap_or_else(|| {
-                path_buf.with_extension(if cfg!(windows) { "exe" } else { "" })
-            });
-            let exe_str = exe.display().to_string();
-            let out_str = out.display().to_string();
-            let link_libs = crate::codegen_c::collect_link_libs(&program);
-            match crate::tcc::compile_c_to_path(
-                &out,
-                &exe,
-                crate::tcc::OutputKind::Exe,
+            // True AOT: SSA → C → TCC/gcc/clang (no RTBC interpreter).
+            let r = crate::targets::build_aot_native(
+                path_buf,
+                &program,
+                options.optimize,
+                options.gc,
                 options.debug,
-                &link_libs,
-            ) {
-                Ok(()) => {
-                    emit_symbols(Path::new(&exe_str), &module)?;
-                    return Ok(exe_str);
-                }
-                Err(err) => {
-                    eprintln!("note: embedded TCC backend failed, falling back: {err}");
-                }
+                options.output.as_deref(),
+                options.native_triple(),
+                options.link_builtin,
+            )?;
+            for n in &r.notes {
+                eprintln!("note: {}", n);
             }
-            for cc in ["gcc", "clang", "cl"] {
-                let mut cmd = std::process::Command::new(cc);
-                if cc == "cl" {
-                    cmd.arg(&out_str).arg(format!("/Fe:{}", exe_str));
-                    if options.debug {
-                        cmd.arg("/Zi").arg("/Od");
-                    }
-                    for lib in &link_libs {
-                        if lib.ends_with(".dll") || lib.ends_with(".lib") {
-                            cmd.arg(lib);
-                        } else {
-                            cmd.arg(format!("{}.lib", lib));
-                        }
-                    }
-                } else {
-                    cmd.arg(&out_str);
-                    if options.debug {
-                        cmd.arg("-g").arg("-O0");
-                    } else {
-                        cmd.arg("-O2");
-                    }
-                    cmd.arg("-o").arg(&exe_str);
-                    for lib in &link_libs {
-                        if lib.ends_with(".c") {
-                            cmd.arg(lib);
-                        } else if lib.ends_with(".so")
-                            || lib.ends_with(".dylib")
-                            || lib.ends_with(".a")
-                            || lib.ends_with(".dll")
-                        {
-                            cmd.arg(lib);
-                        } else if lib.starts_with("lib") {
-                            cmd.arg(format!("-l{}", lib.trim_start_matches("lib")));
-                        } else {
-                            cmd.arg(format!("-l{}", lib.trim_end_matches(".dll")));
-                        }
-                    }
-                }
-                let status = cmd.status();
-                if let Ok(st) = status {
-                    if st.success() {
-                        emit_symbols(Path::new(&exe_str), &module)?;
-                        return Ok(exe_str);
-                    }
-                }
-            }
-            if cfg!(windows) {
-                let mut cmd = std::process::Command::new("wsl");
-                cmd.arg("gcc")
-                    .arg(&out_str.replace('\\', "/"));
-                if options.debug {
-                    cmd.arg("-g").arg("-O0");
-                } else {
-                    cmd.arg("-O2");
-                }
-                let status = cmd
-                    .arg("-o")
-                    .arg(exe_str.replace('\\', "/").trim_end_matches(".exe"))
-                    .status();
-                if let Ok(st) = status {
-                    if st.success() {
-                        emit_symbols(Path::new(&exe_str), &module)?;
-                        return Ok(exe_str);
-                    }
-                }
-            }
-            emit_symbols(&out, &module)?;
-            Ok(out_str)
+            emit_symbols(&r.exe, &module)?;
+            Ok(r.exe.display().to_string())
         }
         Target::App => {
             let result = build_app(
@@ -625,7 +588,12 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             Ok(r.primary.display().to_string())
         }
         Target::Embedded => {
-            let r = crate::targets::build_embedded(path_buf, &program, options.gc)?;
+            let r = crate::targets::build_embedded(
+                path_buf,
+                &program,
+                options.gc,
+                options.optimize,
+            )?;
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
@@ -633,7 +601,8 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             Ok(r.primary.display().to_string())
         }
         Target::Kernel => {
-            let r = crate::targets::build_kernel(path_buf, &program)?;
+            let r =
+                crate::targets::build_kernel(path_buf, &program, options.optimize)?;
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
@@ -641,28 +610,43 @@ pub fn compile_file(path: &str, options: &BuildOptions) -> Result<String, Box<dy
             Ok(r.primary.display().to_string())
         }
         Target::NativeBin => {
-            let link_target = match options.platform {
-                Platform::Windows => crate::native_codegen::LinkTarget::WindowsX64,
-                Platform::Linux => crate::native_codegen::LinkTarget::LinuxX64,
-                Platform::Macos => crate::native_codegen::LinkTarget::MacosX64,
-                Platform::Current => crate::native_codegen::LinkTarget::host(),
-                Platform::Uefi => crate::native_codegen::LinkTarget::UefiX64,
-            };
-            let r = crate::linker::build_native_bin(
+            // Host platforms: true AOT (SSA→C→native). UEFI keeps payload packaging.
+            if matches!(options.platform, Platform::Uefi) {
+                let r = crate::linker::build_native_bin(
+                    path_buf,
+                    &module,
+                    crate::native_codegen::LinkTarget::UefiX64,
+                    options.output.as_deref(),
+                )?;
+                for n in &r.notes {
+                    eprintln!("note: {}", n);
+                }
+                emit_symbols(&r.output, &module)?;
+                return Ok(format!(
+                    "{} (native-bin uefi/payload, objects={})",
+                    r.output.display(),
+                    r.object_dir.display()
+                ));
+            }
+            let r = crate::targets::build_aot_native(
                 path_buf,
-                &module,
-                link_target,
+                &program,
+                options.optimize,
+                options.gc,
+                options.debug,
                 options.output.as_deref(),
+                options.native_triple(),
+                options.link_builtin,
             )?;
             for n in &r.notes {
                 eprintln!("note: {}", n);
             }
-            emit_symbols(&r.output, &module)?;
+            emit_symbols(&r.exe, &module)?;
             Ok(format!(
-                "{} (native-bin {}, objects={})",
-                r.output.display(),
-                link_target.name(),
-                r.object_dir.display()
+                "{} (native-bin AOT {}, c={})",
+                r.exe.display(),
+                options.native_triple(),
+                r.c_path.display()
             ))
         }
         Target::Efi => {

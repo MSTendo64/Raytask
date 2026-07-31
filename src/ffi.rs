@@ -26,27 +26,74 @@ impl FfiAbi {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfiFieldLayout {
+    pub name: String,
+    pub offset: usize,
+    pub ty: FfiType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfiStructLayout {
+    pub name: String,
+    pub size: usize,
+    pub align: usize,
+    pub fields: Vec<FfiFieldLayout>,
+    pub packed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FfiType {
-    Void = 0,
-    Bool = 1,
-    I8 = 2,
-    I16 = 3,
-    I32 = 4,
-    I64 = 5,
-    U8 = 6,
-    U16 = 7,
-    U32 = 8,
-    U64 = 9,
-    F32 = 10,
-    F64 = 11,
-    Ptr = 12,
-    CString = 13,
+    Void,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Ptr,
+    CString,
+    /// POD aggregate with C layout — passed/returned by value ABI.
+    Struct(FfiStructLayout),
 }
 
 impl FfiType {
+    pub fn tag(&self) -> u8 {
+        match self {
+            FfiType::Void => 0,
+            FfiType::Bool => 1,
+            FfiType::I8 => 2,
+            FfiType::I16 => 3,
+            FfiType::I32 => 4,
+            FfiType::I64 => 5,
+            FfiType::U8 => 6,
+            FfiType::U16 => 7,
+            FfiType::U32 => 8,
+            FfiType::U64 => 9,
+            FfiType::F32 => 10,
+            FfiType::F64 => 11,
+            FfiType::Ptr => 12,
+            FfiType::CString => 13,
+            FfiType::Struct(_) => 14,
+        }
+    }
+
     pub fn from_type_ref(tr: &TypeRef) -> Self {
+        Self::from_type_ref_with(tr, &std::collections::HashMap::new())
+    }
+
+    pub fn from_type_ref_with(
+        tr: &TypeRef,
+        layouts: &std::collections::HashMap<String, FfiStructLayout>,
+    ) -> Self {
+        if let Some(layout) = layouts.get(&tr.name) {
+            return FfiType::Struct(layout.clone());
+        }
         if tr.name == "ptr" || tr.name == "pointer" {
             return FfiType::Ptr;
         }
@@ -70,8 +117,12 @@ impl FfiType {
         }
     }
 
-    pub fn is_float(self) -> bool {
+    pub fn is_float(&self) -> bool {
         matches!(self, FfiType::F32 | FfiType::F64)
+    }
+
+    pub fn is_struct(&self) -> bool {
+        matches!(self, FfiType::Struct(_))
     }
 
     pub fn from_u8(v: u8) -> Self {
@@ -89,7 +140,8 @@ impl FfiType {
             10 => FfiType::F32,
             11 => FfiType::F64,
             12 => FfiType::Ptr,
-            _ => FfiType::CString,
+            13 => FfiType::CString,
+            _ => FfiType::Ptr,
         }
     }
 }
@@ -174,6 +226,15 @@ pub fn ffi_from_function(
     default_lib: Option<&str>,
     attrs: &[Attribute],
 ) -> Result<FfiFunction, String> {
+    ffi_from_function_with(f, default_lib, attrs, &std::collections::HashMap::new())
+}
+
+pub fn ffi_from_function_with(
+    f: &FunctionDecl,
+    default_lib: Option<&str>,
+    attrs: &[Attribute],
+    layouts: &std::collections::HashMap<String, FfiStructLayout>,
+) -> Result<FfiFunction, String> {
     let mut library = default_lib.map(|s| s.to_string());
     let mut symbol = f.name.clone();
     let mut abi = FfiAbi::System;
@@ -215,9 +276,9 @@ pub fn ffi_from_function(
         params: f
             .params
             .iter()
-            .map(|p| FfiType::from_type_ref(&p.ty))
+            .map(|p| FfiType::from_type_ref_with(&p.ty, layouts))
             .collect(),
-        ret: FfiType::from_type_ref(&f.return_type),
+        ret: FfiType::from_type_ref_with(&f.return_type, layouts),
     })
 }
 
@@ -441,7 +502,203 @@ enum ArgSlot {
     F32(f32),
 }
 
-fn value_to_slot(v: &Value, ty: FfiType, strings: &mut Vec<CString>) -> RuntimeResult<ArgSlot> {
+fn write_scalar(buf: &mut [u8], offset: usize, ty: &FfiType, v: &Value) -> RuntimeResult<()> {
+    let end = match ty {
+        FfiType::Bool | FfiType::I8 | FfiType::U8 => offset + 1,
+        FfiType::I16 | FfiType::U16 => offset + 2,
+        FfiType::I32 | FfiType::U32 | FfiType::F32 => offset + 4,
+        FfiType::I64 | FfiType::U64 | FfiType::F64 | FfiType::Ptr | FfiType::CString => offset + 8,
+        FfiType::Void => return Ok(()),
+        FfiType::Struct(_) => {
+            return Err(RuntimeError::Message(
+                "nested struct field packing requires Struct path".into(),
+            ));
+        }
+    };
+    if end > buf.len() {
+        return Err(RuntimeError::Message("struct buffer overflow".into()));
+    }
+    match ty {
+        FfiType::Bool => buf[offset] = if v.is_truthy() { 1 } else { 0 },
+        FfiType::I8 => buf[offset] = v.as_int()? as u8,
+        FfiType::U8 => buf[offset] = v.as_int()? as u8,
+        FfiType::I16 => buf[offset..offset + 2].copy_from_slice(&(v.as_int()? as i16).to_ne_bytes()),
+        FfiType::U16 => buf[offset..offset + 2].copy_from_slice(&(v.as_int()? as u16).to_ne_bytes()),
+        FfiType::I32 => buf[offset..offset + 4].copy_from_slice(&(v.as_int()? as i32).to_ne_bytes()),
+        FfiType::U32 => buf[offset..offset + 4].copy_from_slice(&(v.as_int()? as u32).to_ne_bytes()),
+        FfiType::I64 => buf[offset..offset + 8].copy_from_slice(&v.as_int()?.to_ne_bytes()),
+        FfiType::U64 => {
+            buf[offset..offset + 8].copy_from_slice(&(v.as_int()? as u64).to_ne_bytes())
+        }
+        FfiType::F32 => {
+            buf[offset..offset + 4].copy_from_slice(&(v.as_float()? as f32).to_ne_bytes())
+        }
+        FfiType::F64 => buf[offset..offset + 8].copy_from_slice(&v.as_float()?.to_ne_bytes()),
+        FfiType::Ptr => {
+            let p = match v {
+                Value::Ptr(p) => *p as u64,
+                Value::Null => 0,
+                Value::Int(n) => *n as u64,
+                _ => {
+                    return Err(RuntimeError::TypeError(format!(
+                        "cannot pack {} as pointer field",
+                        v.type_name()
+                    )));
+                }
+            };
+            buf[offset..offset + 8].copy_from_slice(&p.to_ne_bytes());
+        }
+        FfiType::CString => {
+            // Store pointer only if already a Ptr; strings need external lifetime — use 0
+            let p = match v {
+                Value::Ptr(p) => *p as u64,
+                Value::Null => 0,
+                _ => 0,
+            };
+            buf[offset..offset + 8].copy_from_slice(&p.to_ne_bytes());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn read_scalar(buf: &[u8], offset: usize, ty: &FfiType) -> RuntimeResult<Value> {
+    Ok(match ty {
+        FfiType::Void => Value::Null,
+        FfiType::Bool => Value::Bool(buf.get(offset).copied().unwrap_or(0) != 0),
+        FfiType::I8 => Value::Int(buf.get(offset).copied().unwrap_or(0) as i8 as i64),
+        FfiType::U8 => Value::Int(buf.get(offset).copied().unwrap_or(0) as i64),
+        FfiType::I16 => {
+            let mut b = [0u8; 2];
+            b.copy_from_slice(buf.get(offset..offset + 2).unwrap_or(&[0; 2]));
+            Value::Int(i16::from_ne_bytes(b) as i64)
+        }
+        FfiType::U16 => {
+            let mut b = [0u8; 2];
+            b.copy_from_slice(buf.get(offset..offset + 2).unwrap_or(&[0; 2]));
+            Value::Int(u16::from_ne_bytes(b) as i64)
+        }
+        FfiType::I32 => {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(buf.get(offset..offset + 4).unwrap_or(&[0; 4]));
+            Value::Int(i32::from_ne_bytes(b) as i64)
+        }
+        FfiType::U32 => {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(buf.get(offset..offset + 4).unwrap_or(&[0; 4]));
+            Value::Int(u32::from_ne_bytes(b) as i64)
+        }
+        FfiType::I64 => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(buf.get(offset..offset + 8).unwrap_or(&[0; 8]));
+            Value::Int(i64::from_ne_bytes(b))
+        }
+        FfiType::U64 => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(buf.get(offset..offset + 8).unwrap_or(&[0; 8]));
+            Value::UInt(u64::from_ne_bytes(b))
+        }
+        FfiType::F32 => {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(buf.get(offset..offset + 4).unwrap_or(&[0; 4]));
+            Value::Float(f32::from_ne_bytes(b) as f64)
+        }
+        FfiType::F64 => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(buf.get(offset..offset + 8).unwrap_or(&[0; 8]));
+            Value::Float(f64::from_ne_bytes(b))
+        }
+        FfiType::Ptr => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(buf.get(offset..offset + 8).unwrap_or(&[0; 8]));
+            let p = u64::from_ne_bytes(b);
+            if p == 0 {
+                Value::Null
+            } else {
+                Value::Ptr(p as usize)
+            }
+        }
+        FfiType::CString => Value::Null,
+        FfiType::Struct(_) => Value::Null,
+    })
+}
+
+fn pack_struct(v: &Value, layout: &FfiStructLayout) -> RuntimeResult<Vec<u8>> {
+    let mut buf = vec![0u8; layout.size];
+    match v {
+        Value::Object(o) => {
+            let obj = o.borrow();
+            for field in &layout.fields {
+                let fv = obj.fields.get(&field.name).cloned().unwrap_or(Value::Null);
+                match &field.ty {
+                    FfiType::Struct(nested) => {
+                        let nested_buf = pack_struct(&fv, nested)?;
+                        let end = field.offset + nested.size;
+                        if end > buf.len() {
+                            return Err(RuntimeError::Message("nested struct overflow".into()));
+                        }
+                        buf[field.offset..end].copy_from_slice(&nested_buf);
+                    }
+                    other => write_scalar(&mut buf, field.offset, other, &fv)?,
+                }
+            }
+        }
+        Value::Null => {}
+        _ => {
+            return Err(RuntimeError::TypeError(format!(
+                "expected object for struct '{}', got {}",
+                layout.name,
+                v.type_name()
+            )));
+        }
+    }
+    Ok(buf)
+}
+
+fn unpack_struct(buf: &[u8], layout: &FfiStructLayout) -> RuntimeResult<Value> {
+    use crate::gc::alloc_object;
+    use crate::value::ObjectInstance;
+    use std::collections::HashMap;
+    let mut fields = HashMap::new();
+    for field in &layout.fields {
+        let fv = match &field.ty {
+            FfiType::Struct(nested) => {
+                let end = (field.offset + nested.size).min(buf.len());
+                let slice = if field.offset < buf.len() {
+                    &buf[field.offset..end]
+                } else {
+                    &[]
+                };
+                let mut tmp = vec![0u8; nested.size];
+                let n = slice.len().min(nested.size);
+                tmp[..n].copy_from_slice(&slice[..n]);
+                unpack_struct(&tmp, nested)?
+            }
+            other => read_scalar(buf, field.offset, other)?,
+        };
+        fields.insert(field.name.clone(), fv);
+    }
+    Ok(alloc_object(ObjectInstance {
+        class_name: layout.name.clone(),
+        fields,
+        class_index: None,
+        finalized: false,
+    }))
+}
+
+fn blob_as_u64(blob: &[u8]) -> u64 {
+    let mut b = [0u8; 8];
+    let n = blob.len().min(8);
+    b[..n].copy_from_slice(&blob[..n]);
+    u64::from_ne_bytes(b)
+}
+
+fn value_to_slot(
+    v: &Value,
+    ty: &FfiType,
+    strings: &mut Vec<CString>,
+    blobs: &mut Vec<Vec<u8>>,
+) -> RuntimeResult<ArgSlot> {
     Ok(match ty {
         FfiType::Void => ArgSlot::I64(0),
         FfiType::Bool => ArgSlot::I64(if v.is_truthy() { 1 } else { 0 }),
@@ -476,6 +733,19 @@ fn value_to_slot(v: &Value, ty: FfiType, strings: &mut Vec<CString>) -> RuntimeR
             let ptr = c.as_ptr() as u64;
             strings.push(c);
             ArgSlot::U64(ptr)
+        }
+        FfiType::Struct(layout) => {
+            let blob = pack_struct(v, layout)?;
+            if crate::abi::struct_fits_register(layout) {
+                let u = blob_as_u64(&blob);
+                blobs.push(blob);
+                ArgSlot::U64(u)
+            } else {
+                // Win64 / SysV: large aggregates passed by pointer to a copy
+                blobs.push(blob);
+                let ptr = blobs.last().unwrap().as_ptr() as u64;
+                ArgSlot::U64(ptr)
+            }
         }
     })
 }
@@ -515,26 +785,89 @@ pub fn call(func: &FfiFunction, args: &[Value]) -> RuntimeResult<Value> {
 
     load_library(&func.library)?;
 
+    // Stable heap buffers so pointers stay valid for the duration of the call.
     let mut strings = Vec::new();
-    let mut slots = Vec::with_capacity(args.len());
+    let mut blob_boxes: Vec<Box<[u8]>> = Vec::new();
+
+    let sret_idx = match &func.ret {
+        FfiType::Struct(layout) if !crate::abi::struct_fits_register(layout) => {
+            blob_boxes.push(vec![0u8; layout.size].into_boxed_slice());
+            Some(0usize)
+        }
+        _ => None,
+    };
+
+    let mut pending: Vec<(usize, bool)> = Vec::new(); // (blob_idx, fits_register)
+    let mut scalar_slots: Vec<ArgSlot> = Vec::new();
+
+    // Build arg list conceptually: optional sret + params
+    if sret_idx.is_some() {
+        scalar_slots.push(ArgSlot::U64(0)); // patched below
+    }
+
     for (a, ty) in args.iter().zip(func.params.iter()) {
-        slots.push(value_to_slot(a, *ty, &mut strings)?);
+        match ty {
+            FfiType::Struct(layout) => {
+                let blob = pack_struct(a, layout)?;
+                let fits = crate::abi::struct_fits_register(layout);
+                let idx = blob_boxes.len();
+                blob_boxes.push(blob.into_boxed_slice());
+                pending.push((idx, fits));
+                scalar_slots.push(ArgSlot::U64(0)); // patched
+            }
+            other => {
+                let mut tmp_blobs = Vec::new();
+                scalar_slots.push(value_to_slot(a, other, &mut strings, &mut tmp_blobs)?);
+                // tmp_blobs unused for non-struct
+            }
+        }
+    }
+
+    // Patch struct / sret pointers now that blob_boxes is final
+    let mut slot_i = 0usize;
+    if let Some(si) = sret_idx {
+        scalar_slots[slot_i] = ArgSlot::U64(blob_boxes[si].as_ptr() as u64);
+        slot_i += 1;
+    }
+    let mut pend_i = 0usize;
+    for ty in &func.params {
+        if matches!(ty, FfiType::Struct(_)) {
+            let (bi, fits) = pending[pend_i];
+            pend_i += 1;
+            if fits {
+                scalar_slots[slot_i] = ArgSlot::U64(blob_as_u64(&blob_boxes[bi]));
+            } else {
+                scalar_slots[slot_i] = ArgSlot::U64(blob_boxes[bi].as_ptr() as u64);
+            }
+        }
+        slot_i += 1;
     }
 
     let has_float = func.params.iter().any(|t| t.is_float()) || func.ret.is_float();
-    let result = if has_float {
-        call_float(func, &slots)?
+    let result = if has_float && sret_idx.is_none() && !func.params.iter().any(|t| t.is_struct()) {
+        call_float(func, &scalar_slots)?
     } else {
-        call_int(func, &slots)?
+        call_int(func, &scalar_slots)?
     };
+
+    let result = if let Some(si) = sret_idx {
+        match &func.ret {
+            FfiType::Struct(layout) => unpack_struct(&blob_boxes[si], layout)?,
+            _ => result,
+        }
+    } else {
+        result
+    };
+
     drop(strings);
+    drop(blob_boxes);
     Ok(result)
 }
 
 fn call_int(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
     let lib_name = func.library.clone();
     let sym = func.symbol.clone();
-    let ret = func.ret;
+    let ret = func.ret.clone();
     let n = slots.len();
     let a: Vec<u64> = slots.iter().map(slot_as_u64).collect();
 
@@ -600,13 +933,13 @@ fn call_int(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
         }
     };
 
-    decode_return(ret, raw)
+    decode_return(&ret, raw)
 }
 
 fn call_float(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
     let lib_name = func.library.clone();
     let sym = func.symbol.clone();
-    let ret = func.ret;
+    let ret = func.ret.clone();
 
     load_library(&lib_name)?;
     let libs = libraries()
@@ -680,7 +1013,7 @@ fn call_float(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
     )))
 }
 
-fn decode_return(ret: FfiType, raw: u64) -> RuntimeResult<Value> {
+fn decode_return(ret: &FfiType, raw: u64) -> RuntimeResult<Value> {
     Ok(match ret {
         FfiType::Void => Value::Null,
         FfiType::Bool => Value::Bool(raw != 0),
@@ -708,24 +1041,33 @@ fn decode_return(ret: FfiType, raw: u64) -> RuntimeResult<Value> {
                 Value::String(s.to_string_lossy().into_owned().into())
             }
         }
+        FfiType::Struct(layout) => {
+            // Small struct returned in register(s)
+            let n = layout.size.min(8);
+            let mut buf = vec![0u8; layout.size];
+            let bytes = raw.to_ne_bytes();
+            buf[..n].copy_from_slice(&bytes[..n]);
+            unpack_struct(&buf, layout)?
+        }
     })
 }
 
-pub fn c_type_name(ty: FfiType) -> &'static str {
+pub fn c_type_name(ty: &FfiType) -> String {
     match ty {
-        FfiType::Void => "void",
-        FfiType::Bool => "bool",
-        FfiType::I8 => "int8_t",
-        FfiType::I16 => "int16_t",
-        FfiType::I32 => "int",
-        FfiType::I64 => "int64_t",
-        FfiType::U8 => "uint8_t",
-        FfiType::U16 => "uint16_t",
-        FfiType::U32 => "unsigned",
-        FfiType::U64 => "uint64_t",
-        FfiType::F32 => "float",
-        FfiType::F64 => "double",
-        FfiType::Ptr => "void*",
-        FfiType::CString => "const char*",
+        FfiType::Void => "void".into(),
+        FfiType::Bool => "bool".into(),
+        FfiType::I8 => "int8_t".into(),
+        FfiType::I16 => "int16_t".into(),
+        FfiType::I32 => "int".into(),
+        FfiType::I64 => "int64_t".into(),
+        FfiType::U8 => "uint8_t".into(),
+        FfiType::U16 => "uint16_t".into(),
+        FfiType::U32 => "unsigned".into(),
+        FfiType::U64 => "uint64_t".into(),
+        FfiType::F32 => "float".into(),
+        FfiType::F64 => "double".into(),
+        FfiType::Ptr => "void*".into(),
+        FfiType::CString => "const char*".into(),
+        FfiType::Struct(s) => s.name.clone(),
     }
 }

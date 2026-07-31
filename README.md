@@ -5,7 +5,8 @@
 ## Features
 
 - Lexer → parser → AST → bytecode VM
-- Transpile to C (`--target native`)
+- True AOT to host binary (`--target native` / `native-bin`)
+- Transpile dump (`transpile_c`) / freestanding SSA→C (`embedded` / `kernel`)
 - CLI: `build`, `run`, `test`, `new`, `check`, `doc`, package commands
 - Classes, structs, interfaces, generics, `var` / `dyn`, properties, async
 - Memory: GC (default in the VM), `stack` / `owned` / `unsafe`
@@ -59,17 +60,20 @@ raytask bind mylib.h --lib mylib.dll                  # C header → FFI decls (
 raytask run main.rt
 raytask run main.rt --no-stdlib                      # run source without bstd or builtin globals
 raytask build main.rt                              # → .rtbc
-raytask build main.rt --target native              # → .c (+ vendored TCC first, then gcc/clang/cl fallback)
+raytask build main.rt --target native              # True AOT: SSA→C→TCC/gcc (no RTBC VM)
+raytask build main.rt --target native-bin -o app.exe
+raytask build main.rt --target native --platform linux --arch aarch64   # cross via clang -target
+raytask build main.rt --target native --link-builtin   # .o + built-in ELF/COFF linker
 raytask build main.rt --target app --platform current
 raytask build main.rt --target wasm
 raytask build main.rt --target web
 raytask build main.rt --target mobile
 raytask build main.rt --target embedded --no-gc
 raytask build main.rt --target kernel
-raytask build main.rt --target native-bin --platform windows
 raytask build main.rt --target efi
 raytask build main.rt --target raw
 raytask link main.rtbc --platform linux -o app.elf
+raytask link foo.o bar.o --platform linux --arch x86_64 -o app.elf --entry _start
 raytask tcc examples/tcc/hello.c -o hello.exe
 raytask tcc -run examples/tcc/hello.c -- demo
 raytask dap                                          # Debug Adapter Protocol (stdio)
@@ -86,19 +90,20 @@ raytask doc
 | `--target` | Output |
 |------------|--------|
 | `bytecode` | `.rtbc` |
-| `native` | C with GC + cooperative async |
-| `app` | single executable (VM + bytecode) |
-| `native-bin` | PE/ELF/Mach-O via NativeCodeGen + Linker |
-| `efi` / `raw` | UEFI `.efi` or flat `.bin` |
+| `native` | **True AOT** (SSA → C → TCC/gcc/clang; multi-arch via `--arch` / `--platform`) |
+| `native-bin` | same True AOT as `native` (UEFI still payload-based) |
+| `app` | stub + embedded `.rtbc` |
+| `efi` / `raw` | UEFI `.efi` or flat `.bin` (payload packaging) |
 | `wasm` / `web` | WASM/HTML bundle (+ bytecode payload for web) |
 | `mobile` | Android / iOS scaffolds |
-| `embedded` / `kernel` | freestanding C (+ ISR / MMIO attributes) |
+| `embedded` / `kernel` | freestanding C (+ ISR / MMIO; SSA→C) |
 
 ### Vendored TCC
 
 The repository now vendors TinyCC under `tcc/` and builds `libtcc` as part of the normal Cargo build.
 
-- `raytask build ... --target native` now tries the embedded TCC backend first, then falls back to host `gcc` / `clang` / `cl` when needed.
+- `raytask build ... --target native|native-bin` uses SSA → C, then embedded TCC (or gcc/clang/cl). Cross builds use `--platform` + `--arch` (clang/zig `-target`).
+- `raytask link a.o b.o …` runs the **built-in ELF/COFF linker** (resolve + reloc + PE/ELF emit). `.rtbc` still uses the payload packager.
 - `raytask tcc ...` exposes the bundled compiler directly for C files, object files, shared libraries, and `-run` workflows.
 - The bundled runtime headers and support files are resolved from the vendored `tcc/` tree, so no external GCC toolchain is required for the TCC path.
 

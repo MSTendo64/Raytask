@@ -1,0 +1,36 @@
+// RayTask systems example: packed/C-layout struct, union, sizeof, volatile MMIO sketch.
+// Build: raytask build examples/systems/blink.rt --target embedded --no-gc
+
+[repr: "C"]
+[packed]
+struct GpioRegs {
+    int moder;
+    int odr;
+}
+
+[address: 0x40020000]
+struct GpioA {
+    int moder;
+    int odr;
+}
+
+union WordBytes {
+    int word;
+    byte b0;
+    // overlapping storage on native/C; VM treats fields independently
+}
+
+[interrupt: "TIM2"]
+void Tim2Irq() {
+    // ISR stub — section placed by C backend
+}
+
+void Main() {
+    int sz = sizeof(int);
+    int off = offsetof(GpioRegs, odr);
+    volatile int x = 0;
+    x = sz + off;
+    unsafe {
+        asm("nop");
+    }
+}

@@ -14,6 +14,7 @@ pub enum Item {
     Module(ModuleDecl),
     Class(ClassDecl),
     Struct(StructDecl),
+    Union(UnionDecl),
     Interface(InterfaceDecl),
     Function(FunctionDecl),
     Const(ConstDecl),
@@ -75,6 +76,23 @@ pub struct StructDecl {
     pub type_params: Vec<String>,
     pub members: Vec<Member>,
     pub attributes: Vec<Attribute>,
+    /// Emit as packed C struct (`#pragma pack` / `__attribute__((packed))`).
+    pub packed: bool,
+    /// Optional alignment in bytes (`[align: N]`).
+    pub align: Option<u32>,
+    /// Value-type / C ABI layout (`[repr: "C"]`); otherwise may be heap object.
+    pub repr_c: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnionDecl {
+    pub access: Access,
+    pub name: String,
+    pub members: Vec<Member>,
+    pub attributes: Vec<Attribute>,
+    pub packed: bool,
+    pub align: Option<u32>,
     pub span: Span,
 }
 
@@ -210,6 +228,8 @@ pub struct TypeRef {
     pub nullable: bool,
     pub is_array: bool,
     pub array_dims: usize,
+    /// C-style `volatile` qualifier (systems / MMIO).
+    pub volatile: bool,
     pub span: Span,
 }
 
@@ -221,6 +241,7 @@ impl TypeRef {
             nullable: false,
             is_array: false,
             array_dims: 0,
+            volatile: false,
             span,
         }
     }
@@ -297,6 +318,11 @@ pub enum Stmt {
         span: Span,
     },
     Unsafe(Block, Span),
+    /// Inline assembly escape (`asm("...");`) — native/C backends only.
+    Asm {
+        template: String,
+        span: Span,
+    },
     Block(Block),
 }
 
@@ -431,6 +457,14 @@ pub enum Expr {
         span: Span,
     },
     TypeOf(TypeRef, Span),
+    /// Compile-time size in bytes of a type (native/C); VM uses known primitive sizes.
+    SizeOf(TypeRef, Span),
+    /// Byte offset of a field within a struct/union type.
+    OffsetOf {
+        ty: TypeRef,
+        field: String,
+        span: Span,
+    },
     Is {
         expr: Box<Expr>,
         ty: TypeRef,
@@ -543,6 +577,8 @@ impl Expr {
             | Expr::Ternary { span: s, .. }
             | Expr::Cast { span: s, .. }
             | Expr::TypeOf(_, s)
+            | Expr::SizeOf(_, s)
+            | Expr::OffsetOf { span: s, .. }
             | Expr::Is { span: s, .. }
             | Expr::As { span: s, .. }
             | Expr::Await(_, s)

@@ -34,6 +34,8 @@ RayTask source compatibility is governed by the following policy:
 - `docs/spec/01-language-model.md`
 - `docs/spec/02-type-system.md`
 - `docs/spec/03-oop-async-conformance.md`
+- `docs/spec/04-ssa-optimizer.md`
+- `docs/spec/05-systems.md`
 
 ## Snapshot Reference
 
@@ -50,20 +52,22 @@ RayTask source compatibility is governed by the following policy:
 | Async surface | `async`, `await`, `Task`, `TaskGroup`, cancellation tokens |
 | Generic implementation | semantic checking + monomorphization |
 | Dispatch | instance vs `static` members are distinct |
+| Mid-level IR | SSA between AST/bytecode; **SSA→C** for `embedded`/`kernel` |
+| Systems surface | `union`, `volatile`, `sizeof`/`offsetof`, packed/align/repr C, freestanding arena, board BSPs |
 
 ## Product Targets
 
 | Target | Result |
 |--------|--------|
 | `bytecode` | `.rtbc` for the VM |
-| `native` | generated C/native flow with RayTask runtime semantics |
-| `app` | standalone executable (stub + bytecode) |
+| `native` | **True AOT**: SSA → C → TCC/gcc (no RTBC interpreter) |
+| `app` | standalone executable (runtime stub + embedded `.rtbc`) |
 | `wasm` | C + HTML/JS shell |
 | `web` | web bundle scaffold + embedded bytecode |
 | `mobile` | Android + iOS scaffolds with bytecode |
-| `embedded` | freestanding C + `link.ld` |
-| `kernel` | freestanding, GC off, `[export:"kmain"]`, `[interrupt:]` |
-| `native-bin` | NativeCodeGen + linker output |
+| `embedded` | freestanding C + `link.ld` (SSA→C) |
+| `kernel` | freestanding, GC off, SSA→C, `[export:"kmain"]` |
+| `native-bin` | same True AOT as `native` (UEFI platform still uses payload packaging) |
 | `efi` | UEFI PE32+ |
 | `raw` | flat binary |
 

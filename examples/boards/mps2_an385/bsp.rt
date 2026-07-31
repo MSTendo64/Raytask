@@ -1,0 +1,118 @@
+//! ARM MPS2 AN385 BSP — CMSDK UART0 + GPIO0 (QEMU: -M mps2-an385).
+//!
+//! UART0 @ 0x40004000, GPIO0 @ 0x40010000. Bauddiv assumes ~25 MHz SYSCLK.
+
+import bstd.hal;
+
+[repr: "C"]
+struct CmsdkUart {
+    volatile int data;
+    volatile int state;
+    volatile int ctrl;
+    volatile int intstatus;
+    volatile int bauddiv;
+}
+
+[repr: "C"]
+struct CmsdkGpio {
+    volatile int data;
+    volatile int dataout;
+    volatile int reserved0;
+    volatile int reserved1;
+    volatile int outenset;
+    volatile int outenclr;
+    volatile int altfuncset;
+    volatile int altfuncclr;
+    volatile int intenset;
+    volatile int intenclr;
+    volatile int inttype_set;
+    volatile int inttype_clr;
+    volatile int intpol_set;
+    volatile int intpol_clr;
+    volatile int intstatus;
+}
+
+[address: 0x40004000]
+struct Uart0Regs {
+    volatile int data;
+    volatile int state;
+    volatile int ctrl;
+    volatile int intstatus;
+    volatile int bauddiv;
+}
+
+[address: 0x40010000]
+struct Gpio0Regs {
+    volatile int data;
+    volatile int dataout;
+    volatile int reserved0;
+    volatile int reserved1;
+    volatile int outenset;
+    volatile int outenclr;
+}
+
+const long UART0_BASE = 0x40004000;
+const long GPIO0_BASE = 0x40010000;
+
+const int UART_STATE_TXFULL = 1 << 0;
+const int UART_STATE_RXFULL = 1 << 1;
+const int UART_CTRL_TXEN = 1 << 0;
+const int UART_CTRL_RXEN = 1 << 1;
+
+/// LED on GPIO0 pin 0 (DATAOUT bit 0).
+export void LedInit() {
+    MmioWrite32(GPIO0_BASE + 0x10, 1); // OUTENSET pin 0
+    LedOff();
+}
+
+export void LedOn() {
+    var v = MmioRead32(GPIO0_BASE + 0x04);
+    MmioWrite32(GPIO0_BASE + 0x04, v | 1);
+}
+
+export void LedOff() {
+    var v = MmioRead32(GPIO0_BASE + 0x04);
+    MmioWrite32(GPIO0_BASE + 0x04, v & ~1);
+}
+
+export void LedToggle() {
+    var v = MmioRead32(GPIO0_BASE + 0x04);
+    MmioWrite32(GPIO0_BASE + 0x04, v ^ 1);
+}
+
+export void UartInit() {
+    // 25e6 / 115200 ≈ 217
+    MmioWrite32(UART0_BASE + 0x10, 217);
+    MmioWrite32(UART0_BASE + 0x08, UART_CTRL_TXEN | UART_CTRL_RXEN);
+}
+
+export void UartWriteByte(b: int) {
+    while ((MmioRead32(UART0_BASE + 0x04) & UART_STATE_TXFULL) != 0) {
+    }
+    MmioWrite32(UART0_BASE + 0x00, b & 0xFF);
+}
+
+export void UartWriteHello() {
+    UartWriteByte(72);
+    UartWriteByte(101);
+    UartWriteByte(108);
+    UartWriteByte(108);
+    UartWriteByte(111);
+    UartWriteByte(32);
+    UartWriteByte(77);
+    UartWriteByte(80);
+    UartWriteByte(83);
+    UartWriteByte(50);
+    UartWriteByte(13);
+    UartWriteByte(10);
+}
+
+export int UartReadByte() {
+    while ((MmioRead32(UART0_BASE + 0x04) & UART_STATE_RXFULL) == 0) {
+    }
+    return MmioRead32(UART0_BASE + 0x00) & 0xFF;
+}
+
+export bool UartDataReady() {
+    return (MmioRead32(UART0_BASE + 0x04) & UART_STATE_RXFULL) != 0;
+}

@@ -1,0 +1,14 @@
+// MPS2 AN385 / QEMU — blink GPIO0 pin 0.
+//   raytask build examples/boards/mps2_an385/blink.rt --target embedded --no-gc
+//   cd examples/boards/mps2_an385/dist/blink_embedded && sh build.sh
+//   qemu-system-arm -M mps2-an385 -kernel firmware.elf -nographic
+
+import bsp;
+
+void Main() {
+    LedInit();
+    while (true) {
+        LedToggle();
+        Spin(100000);
+    }
+}

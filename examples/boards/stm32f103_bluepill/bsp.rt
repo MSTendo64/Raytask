@@ -1,0 +1,189 @@
+//! STM32F103 Blue Pill BSP — RCC, GPIO, USART1 (PA9 TX / PA10 RX).
+//!
+//! Clock: HSI 8 MHz after reset (no PLL). USART1 @ 115200 8N1.
+//! On-board LED: PC13, active-low.
+
+import bstd.hal;
+
+// ---- Register layouts (RM0008) ----
+
+[repr: "C"]
+struct Stm32Gpio {
+    volatile int crl;
+    volatile int crh;
+    volatile int idr;
+    volatile int odr;
+    volatile int bsrr;
+    volatile int brr;
+    volatile int lckr;
+}
+
+[repr: "C"]
+struct Stm32Rcc {
+    volatile int cr;
+    volatile int cfgr;
+    volatile int cir;
+    volatile int apb2rstr;
+    volatile int apb1rstr;
+    volatile int ahbenr;
+    volatile int apb2enr;
+    volatile int apb1enr;
+}
+
+[repr: "C"]
+struct Stm32Usart {
+    volatile int sr;
+    volatile int dr;
+    volatile int brr;
+    volatile int cr1;
+    volatile int cr2;
+    volatile int cr3;
+    volatile int gtpr;
+}
+
+[address: 0x40021000]
+struct RccRegs {
+    volatile int cr;
+    volatile int cfgr;
+    volatile int cir;
+    volatile int apb2rstr;
+    volatile int apb1rstr;
+    volatile int ahbenr;
+    volatile int apb2enr;
+    volatile int apb1enr;
+}
+
+[address: 0x40010800]
+struct GpioARegs {
+    volatile int crl;
+    volatile int crh;
+    volatile int idr;
+    volatile int odr;
+    volatile int bsrr;
+    volatile int brr;
+    volatile int lckr;
+}
+
+[address: 0x40011000]
+struct GpioCRegs {
+    volatile int crl;
+    volatile int crh;
+    volatile int idr;
+    volatile int odr;
+    volatile int bsrr;
+    volatile int brr;
+    volatile int lckr;
+}
+
+[address: 0x40013800]
+struct Usart1Regs {
+    volatile int sr;
+    volatile int dr;
+    volatile int brr;
+    volatile int cr1;
+    volatile int cr2;
+    volatile int cr3;
+    volatile int gtpr;
+}
+
+const long RCC_BASE = 0x40021000;
+const long RCC_APB2ENR = 0x40021018;
+const long GPIOA_BASE = 0x40010800;
+const long GPIOC_BASE = 0x40011000;
+const long USART1_BASE = 0x40013800;
+
+const int RCC_IOPAEN = 1 << 2;
+const int RCC_IOPCEN = 1 << 4;
+const int RCC_USART1EN = 1 << 14;
+
+const int USART_SR_TXE = 1 << 7;
+const int USART_SR_RXNE = 1 << 5;
+const int USART_CR1_TE = 1 << 3;
+const int USART_CR1_RE = 1 << 2;
+const int USART_CR1_UE = 1 << 13;
+
+/// Enable GPIOA, GPIOC, USART1 clocks.
+export void BoardInitClocks() {
+    var en = MmioRead32(RCC_APB2ENR);
+    MmioWrite32(RCC_APB2ENR, en | RCC_IOPAEN | RCC_IOPCEN | RCC_USART1EN);
+}
+
+/// PC13 as push-pull output (LED).
+export void LedInit() {
+    BoardInitClocks();
+    // CRH CNF13=00 MODE13=10 (2 MHz out) for pin 13
+    var crh = MmioRead32(GPIOC_BASE + 0x04);
+    crh = crh & ~(0xF << 20);
+    crh = crh | (0x2 << 20);
+    MmioWrite32(GPIOC_BASE + 0x04, crh);
+    LedOff();
+}
+
+export void LedOn() {
+    // active-low
+    MmioWrite32(GPIOC_BASE + 0x10, 1 << (13 + 16)); // BSRR BR13
+}
+
+export void LedOff() {
+    MmioWrite32(GPIOC_BASE + 0x10, 1 << 13); // BSRR BS13
+}
+
+export void LedToggle() {
+    var odr = MmioRead32(GPIOC_BASE + 0x0C);
+    if ((odr & (1 << 13)) != 0) {
+        LedOn();
+    } else {
+        LedOff();
+    }
+}
+
+/// PA9 AF push-pull TX, PA10 floating input RX; USART1 115200 @ 8 MHz HSI.
+export void UartInit() {
+    BoardInitClocks();
+
+    // PA9 CNF=10 AF-PP MODE=11 (50 MHz); PA10 CNF=01 floating MODE=00
+    var crh = MmioRead32(GPIOA_BASE + 0x04);
+    crh = crh & ~(0xFF << 4);
+    crh = crh | (0xB << 4);  // PA9
+    crh = crh | (0x4 << 8);  // PA10
+    MmioWrite32(GPIOA_BASE + 0x04, crh);
+
+    // BRR ≈ 8e6 / (16 * 115200) → 4.340 → 0x0045
+    MmioWrite32(USART1_BASE + 0x08, 0x45);
+    MmioWrite32(USART1_BASE + 0x0C, USART_CR1_TE | USART_CR1_RE | USART_CR1_UE);
+}
+
+export void UartWriteByte(b: int) {
+    while ((MmioRead32(USART1_BASE + 0x00) & USART_SR_TXE) == 0) {
+    }
+    MmioWrite32(USART1_BASE + 0x04, b & 0xFF);
+}
+
+/// "Hello RayTask\r\n" without relying on hosted string APIs in freestanding C.
+export void UartWriteHello() {
+    UartWriteByte(72);
+    UartWriteByte(101);
+    UartWriteByte(108);
+    UartWriteByte(108);
+    UartWriteByte(111);
+    UartWriteByte(32);
+    UartWriteByte(82);
+    UartWriteByte(97);
+    UartWriteByte(121);
+    UartWriteByte(84);
+    UartWriteByte(97);
+    UartWriteByte(115);
+    UartWriteByte(107);
+    UartWriteByte(13);
+    UartWriteByte(10);
+}
+
+export int UartReadByte() {
+    while ((MmioRead32(USART1_BASE + 0x00) & USART_SR_RXNE) == 0) {
+    }
+    return MmioRead32(USART1_BASE + 0x04) & 0xFF;
+}
+
+export bool UartDataReady() {
+    return (MmioRead32(USART1_BASE + 0x00) & USART_SR_RXNE) != 0;
+}

@@ -19,6 +19,9 @@ API stubs live in `stdlib/bstd/*.rt`. Runtime implementations are VM natives in 
 | `bstd.sqlite` | sync native | `Sqlite.Open`, `SqliteConnection.Execute/Query` |
 | `bstd.async` | partial | `Task.Delay` (thread sleep); no full event loop |
 | `bstd.unsafe` | native | `malloc` / `free` / `sizeof` (arena) |
+| `bstd.hal` | native / freestanding C | `MmioRead32` / `MmioWrite32` / `Spin` — board kits in `examples/boards/` |
+| `bstd.bots` | stub | bot reply helpers (compose with `bstd.net`) |
+| `bstd.game` | stub | ticks / key stubs for game loops |
 | FFI | language | `[DllImport:]` / `[link:]` / `[include:]` / `[c:]` — see `examples/ffi_demo.rt` |
 | `bstd.result` | native | `Ok` / `Error`, `Result.IsOk` / `Value` / `Error` |
 | `bstd.test` | native | `assert`, `assertEq` |

@@ -40,6 +40,29 @@ fn write_c(
     Ok(c)
 }
 
+fn write_c_ssa(
+    program: &Program,
+    opts: CodegenOptions,
+    optimize: crate::Optimize,
+    source: &Path,
+    out_c: &Path,
+) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+    let src = source.to_string_lossy();
+    let ssa = crate::ssa::build_ssa_for_c(program, optimize, true, Some(src.as_ref()))?;
+    let c = CCodegen::with_options(opts).generate_with_ssa(program, &ssa)?;
+    if let Some(parent) = out_c.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(out_c, &c)?;
+    let mut notes = vec!["SSA → C (freestanding function bodies)".into()];
+    match optimize {
+        crate::Optimize::None => notes.push("optimize=none (lift + phi-elim only)".into()),
+        crate::Optimize::Speed => notes.push("optimize=speed".into()),
+        crate::Optimize::Size => notes.push("optimize=size".into()),
+    }
+    Ok((c, notes))
+}
+
 /// `--target wasm`: C → WebAssembly (+ HTML shell).
 pub fn build_wasm(
     source: &Path,
@@ -333,11 +356,16 @@ struct RayTaskAppMain {
     })
 }
 
-/// `--target embedded`: freestanding C, no GC by default, bare-metal friendly.
+/// `--target embedded`: freestanding C via **SSA → C** (shared optimizer with VM).
+///
+/// If the source directory contains board assets (`link.ld`, `startup.c`,
+/// `build.sh`, …), they are copied into the output folder so MCU kits under
+/// `examples/boards/` build with a real memory map.
 pub fn build_embedded(
     source: &Path,
     program: &Program,
     gc: bool,
+    optimize: crate::Optimize,
 ) -> Result<TargetBuildResult, Box<dyn std::error::Error>> {
     let dir = dist_dir(source, "embedded");
     fs::create_dir_all(&dir)?;
@@ -346,55 +374,100 @@ pub fn build_embedded(
         .and_then(|s| s.to_str())
         .unwrap_or("app");
     let c_path = dir.join(format!("{}.c", stem));
-    write_c(
+    let (_c, mut notes) = write_c_ssa(
         program,
         CodegenOptions {
             profile: RuntimeProfile::Embedded,
             gc,
             freestanding: true,
         },
+        optimize,
+        source,
         &c_path,
     )?;
+    notes.insert(0, "Embedded freestanding C generated".into());
 
-    fs::write(
-        dir.join("link.ld"),
-        r#"/* Minimal linker script scaffold for MCU / bare metal */
+    let src_dir = source.parent().unwrap_or(Path::new("."));
+    let mut artifacts = vec![c_path.clone()];
+
+    let board_link = src_dir.join("link.ld");
+    if board_link.is_file() {
+        let dest = dir.join("link.ld");
+        fs::copy(&board_link, &dest)?;
+        artifacts.push(dest);
+        notes.push(format!("using board link.ld from {}", src_dir.display()));
+    } else {
+        let dest = dir.join("link.ld");
+        fs::write(
+            &dest,
+            r#"/* Minimal linker script scaffold for MCU / bare metal */
+MEMORY
+{
+  FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 128K
+  RAM (rwx)  : ORIGIN = 0x20000000, LENGTH = 20K
+}
 ENTRY(Main)
 SECTIONS {
-  .text : { *(.text*) }
-  .rodata : { *(.rodata*) }
-  .data : { *(.data*) }
-  .bss : { *(.bss*) }
+  .text : { *(.text*) *(.text.isr.*) } > FLASH
+  .rodata : { *(.rodata*) } > FLASH
+  .data : { *(.data*) } > RAM AT> FLASH
+  .bss : { *(.bss*) *(COMMON) } > RAM
 }
 "#,
-    )?;
-    fs::write(
-        dir.join("build.sh"),
-        format!(
-            r#"#!/bin/sh
-# Cross-compile example (adjust toolchain)
+        )?;
+        artifacts.push(dest);
+    }
+
+    for name in [
+        "startup.c",
+        "startup.S",
+        "startup.s",
+        "build.sh",
+        "build.ps1",
+        "openocd.cfg",
+        "README.md",
+    ] {
+        let src = src_dir.join(name);
+        if src.is_file() {
+            let dest = dir.join(name);
+            fs::copy(&src, &dest)?;
+            artifacts.push(dest);
+        }
+    }
+
+    if !dir.join("build.sh").is_file() {
+        fs::write(
+            dir.join("build.sh"),
+            format!(
+                r#"#!/bin/sh
+# Cross-compile example (adjust toolchain / CPU)
 arm-none-eabi-gcc -ffreestanding -nostdlib -O2 -T link.ld -o {stem}.elf {stem}.c
 "#
-        ),
-    )?;
-    fs::write(
-        dir.join("README.md"),
-        "# RayTask Embedded target\n\n\
-         Freestanding C output (`--no-gc` recommended). Use your MCU toolchain + `link.ld`.\n\
-         Attributes: `[address:]` MMIO, `[interrupt:]` ISR stubs, `[export:]` symbols.\n",
-    )?;
+            ),
+        )?;
+    }
+    if !dir.join("README.md").is_file() {
+        fs::write(
+            dir.join("README.md"),
+            "# RayTask Embedded target\n\n\
+             Freestanding C output (`--no-gc` recommended). Use your MCU toolchain + `link.ld`.\n\
+             Board kits: `examples/boards/` (STM32 Blue Pill, MPS2 AN385 / QEMU).\n\
+             Attributes: `[address:]` MMIO, `[interrupt:]` ISR stubs, `[export:]` symbols.\n",
+        )?;
+    }
 
     Ok(TargetBuildResult {
-        primary: c_path.clone(),
-        artifacts: vec![c_path, dir.join("link.ld")],
-        notes: vec!["Embedded freestanding C generated".into()],
+        primary: c_path,
+        artifacts,
+        notes,
     })
 }
 
-/// `--target kernel`: freestanding kernel image C (kmain / interrupt handlers).
+/// `--target kernel`: freestanding kernel image C via **SSA → C**.
 pub fn build_kernel(
     source: &Path,
     program: &Program,
+    optimize: crate::Optimize,
 ) -> Result<TargetBuildResult, Box<dyn std::error::Error>> {
     let dir = dist_dir(source, "kernel");
     fs::create_dir_all(&dir)?;
@@ -403,15 +476,18 @@ pub fn build_kernel(
         .and_then(|s| s.to_str())
         .unwrap_or("kernel");
     let c_path = dir.join(format!("{}.c", stem));
-    write_c(
+    let (_c, mut notes) = write_c_ssa(
         program,
         CodegenOptions {
             profile: RuntimeProfile::Kernel,
             gc: false,
             freestanding: true,
         },
+        optimize,
+        source,
         &c_path,
     )?;
+    notes.insert(0, "Kernel freestanding C generated (SSA → C)".into());
 
     fs::write(
         dir.join("kernel.ld"),
@@ -428,14 +504,15 @@ SECTIONS {
     fs::write(
         dir.join("README.md"),
         "# RayTask Kernel target\n\n\
-         No GC, freestanding. Prefer `[export: \"kmain\"]` as entry.\n\
-         `[interrupt: N]` emits ISR section markers for your IDT/IVT setup.\n",
+         No GC, freestanding, **SSA → C** bodies. Prefer `[export: \"kmain\"]` as entry.\n\
+         `[interrupt: N]` emits ISR section markers for your IDT/IVT setup.\n\
+         Pass `--optimize speed|size` to run the SSA pass manager before C emit.\n",
     )?;
 
     Ok(TargetBuildResult {
         primary: c_path.clone(),
         artifacts: vec![c_path, dir.join("kernel.ld")],
-        notes: vec!["Kernel freestanding C generated (GC disabled)".into()],
+        notes,
     })
 }
 
@@ -465,3 +542,395 @@ fn base64_encode(data: &[u8]) -> String {
     }
     out
 }
+
+/// Result of true AOT host build (`native-bin` / SSA→C→TCC|gcc).
+#[derive(Debug, Clone)]
+pub struct AotBuildResult {
+    pub exe: PathBuf,
+    pub c_path: PathBuf,
+    pub notes: Vec<String>,
+}
+
+/// True AOT for host/cross: SSA → C (Host runtime) → TCC/gcc/clang executable.
+/// The output binary contains **no** RTBC payload and **no** VM interpreter.
+pub fn build_aot_native(
+    source: &Path,
+    program: &Program,
+    optimize: crate::Optimize,
+    gc: bool,
+    debug: bool,
+    output: Option<&Path>,
+    triple: crate::native_triple::NativeTriple,
+    link_builtin: bool,
+) -> Result<AotBuildResult, Box<dyn std::error::Error>> {
+    let dir = dist_dir(source, "aot");
+    fs::create_dir_all(&dir)?;
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("app");
+    let c_path = dir.join(format!("{}.c", stem));
+    let src = source.to_string_lossy();
+    let ssa = crate::ssa::build_ssa_for_c(program, optimize, true, Some(src.as_ref()))?;
+    let c = CCodegen::with_options(CodegenOptions {
+        profile: RuntimeProfile::Host,
+        gc,
+        freestanding: false,
+    })
+    .generate_with_ssa(program, &ssa)?;
+    fs::write(&c_path, &c)?;
+
+    let default_exe = dir.join(match triple.os {
+        crate::native_triple::OsKind::Windows | crate::native_triple::OsKind::Uefi => {
+            format!("{}.{}", stem, triple.default_ext())
+        }
+        _ => {
+            if cfg!(windows) && triple.matches_host() {
+                format!("{}.exe", stem)
+            } else {
+                stem.to_string()
+            }
+        }
+    });
+    let exe = output
+        .map(|p| p.to_path_buf())
+        .unwrap_or(default_exe);
+
+    let link_libs = crate::codegen_c::collect_link_libs(program);
+    let mut notes = vec![
+        format!(
+            "True AOT: SSA → C → native ({}) (no RTBC interpreter)",
+            triple
+        ),
+    ];
+    match optimize {
+        crate::Optimize::None => notes.push("optimize=none (lift + phi-elim)".into()),
+        crate::Optimize::Speed => notes.push("optimize=speed".into()),
+        crate::Optimize::Size => notes.push("optimize=size".into()),
+    }
+
+    match compile_native_c(&c_path, &exe, debug, &link_libs, triple, link_builtin) {
+        Ok(how) => notes.push(how),
+        Err(e) => {
+            notes.push(format!("C toolchain failed ({e}); leaving {}", c_path.display()));
+            fs::write(
+                dir.join("README.md"),
+                format!(
+                    "# RayTask True AOT\n\n\
+                     Target: `{triple}` (`{}`)\n\n\
+                     Generated `{}` via SSA → C. Compile with a C toolchain:\n\n\
+                     ```\nclang -target {} -O2 -o {} {}\n```\n\
+                     Or host: `gcc -O2 -o {} {}`\n\n\
+                     This path does **not** embed an RTBC interpreter.\n\
+                     Use `--link-builtin` after `-c` for the built-in ELF/COFF linker.\n",
+                    triple.clang_target(),
+                    c_path.file_name().unwrap().to_string_lossy(),
+                    triple.clang_target(),
+                    exe.file_name().unwrap().to_string_lossy(),
+                    c_path.file_name().unwrap().to_string_lossy(),
+                    exe.file_name().unwrap().to_string_lossy(),
+                    c_path.file_name().unwrap().to_string_lossy(),
+                ),
+            )?;
+            return Ok(AotBuildResult {
+                exe: c_path.clone(),
+                c_path,
+                notes,
+            });
+        }
+    }
+
+    fs::write(
+        dir.join("README.md"),
+        format!(
+            "# RayTask True AOT\n\n\
+             Host/cross executable built from **SSA → C → TCC/gcc/clang** for `{triple}`.\n\
+             No RTBC bytecode and no VM stub are linked into the binary.\n\
+             Use `--target app` if you want stub + embedded `.rtbc` instead.\n\
+             Object files can be linked with `raytask link foo.o --platform … --arch …`.\n"
+        ),
+    )?;
+
+    Ok(AotBuildResult {
+        exe,
+        c_path,
+        notes,
+    })
+}
+
+/// Compile Host C to an object file for `triple`.
+pub fn compile_c_to_object(
+    c_path: &Path,
+    obj_path: &Path,
+    debug: bool,
+    triple: crate::native_triple::NativeTriple,
+) -> Result<String, String> {
+    if let Some(parent) = obj_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    if triple.matches_host() {
+        match crate::tcc::compile_c_to_path(
+            c_path,
+            obj_path,
+            crate::tcc::OutputKind::Obj,
+            debug,
+            &[],
+        ) {
+            Ok(()) => return Ok("object via embedded TCC".into()),
+            Err(_) => {}
+        }
+    }
+    for cc in ["clang", "gcc"] {
+        let mut cmd = Command::new(cc);
+        cmd.arg(c_path).arg("-c").arg("-o").arg(obj_path);
+        if debug {
+            cmd.arg("-g").arg("-O0");
+        } else {
+            cmd.arg("-O2");
+        }
+        if !triple.matches_host() {
+            if cc != "clang" {
+                continue; // gcc cross needs a prefixed toolchain; skip
+            }
+            cmd.arg("-target").arg(triple.clang_target());
+        }
+        if let Ok(st) = cmd.status() {
+            if st.success() {
+                return Ok(format!("object via {cc} ({})", triple.clang_target()));
+            }
+        }
+    }
+    // Retry clang without requiring target when host
+    if triple.matches_host() {
+        let mut cmd = Command::new("clang");
+        cmd.arg(c_path).arg("-c").arg("-o").arg(obj_path);
+        if debug {
+            cmd.arg("-g").arg("-O0");
+        } else {
+            cmd.arg("-O2");
+        }
+        if let Ok(st) = cmd.status() {
+            if st.success() {
+                return Ok("object via clang".into());
+            }
+        }
+        let mut cmd = Command::new("gcc");
+        cmd.arg(c_path).arg("-c").arg("-o").arg(obj_path);
+        if debug {
+            cmd.arg("-g").arg("-O0");
+        } else {
+            cmd.arg("-O2");
+        }
+        if let Ok(st) = cmd.status() {
+            if st.success() {
+                return Ok("object via gcc".into());
+            }
+        }
+    }
+    Err(format!(
+        "no C compiler for object ({})",
+        triple.clang_target()
+    ))
+}
+
+/// Compile + link Host C for a native triple.
+pub fn compile_native_c(
+    c_path: &Path,
+    exe: &Path,
+    debug: bool,
+    link_libs: &[String],
+    triple: crate::native_triple::NativeTriple,
+    link_builtin: bool,
+) -> Result<String, String> {
+    // Built-in linker path: .o → PE/ELF (freestanding / explicit --link-builtin).
+    if link_builtin
+        || matches!(
+            triple.os,
+            crate::native_triple::OsKind::Freestanding | crate::native_triple::OsKind::Uefi
+        )
+    {
+        let obj = c_path.with_extension(if cfg!(windows) { "obj" } else { "o" });
+        match compile_c_to_object(c_path, &obj, debug, triple) {
+            Ok(how) => {
+                let entry = if triple.os == crate::native_triple::OsKind::Uefi {
+                    "efi_main"
+                } else if link_builtin {
+                    "main"
+                } else {
+                    "_start"
+                };
+                let opts = crate::link::BuiltinLinkOptions {
+                    triple,
+                    entry: entry.into(),
+                    base: None,
+                    efi: triple.os == crate::native_triple::OsKind::Uefi,
+                };
+                match crate::link::link_paths(&[obj.clone()], exe, &opts) {
+                    Ok(r) => {
+                        return Ok(format!("{how}; built-in linker ({})", r.notes.join("; ")));
+                    }
+                    Err(e) if link_builtin => return Err(e.message),
+                    Err(e) => {
+                        // Freestanding without CRT entry — keep going to cross/host tools.
+                        let _ = e;
+                    }
+                }
+            }
+            Err(e) if link_builtin => return Err(e),
+            Err(_) => {}
+        }
+    }
+
+    if triple.matches_host() {
+        return compile_host_c(c_path, exe, debug, link_libs);
+    }
+
+    // Cross: clang -target <triple>
+    if let Some(parent) = exe.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    for cc in ["clang", "zig"] {
+        let mut cmd = Command::new(cc);
+        if cc == "zig" {
+            cmd.arg("cc");
+        }
+        cmd.arg(c_path);
+        if debug {
+            cmd.arg("-g").arg("-O0");
+        } else {
+            cmd.arg("-O2");
+        }
+        cmd.arg("-target").arg(triple.clang_target());
+        cmd.arg("-o").arg(exe);
+        for lib in link_libs {
+            if lib.ends_with(".c")
+                || lib.ends_with(".o")
+                || lib.ends_with(".obj")
+                || lib.ends_with(".a")
+                || lib.ends_with(".so")
+                || lib.ends_with(".dylib")
+                || lib.ends_with(".dll")
+                || lib.ends_with(".lib")
+            {
+                cmd.arg(lib);
+            } else if lib.starts_with("lib") {
+                cmd.arg(format!("-l{}", lib.trim_start_matches("lib")));
+            } else {
+                cmd.arg(format!("-l{}", lib.trim_end_matches(".dll")));
+            }
+        }
+        if let Ok(st) = cmd.status() {
+            if st.success() {
+                return Ok(format!(
+                    "cross-linked with {cc} -target {}",
+                    triple.clang_target()
+                ));
+            }
+        }
+    }
+
+    // Last resort: emit .o for the user + built-in link attempt
+    let obj = c_path.with_extension("o");
+    let how = compile_c_to_object(c_path, &obj, debug, triple)?;
+    let opts = crate::link::BuiltinLinkOptions {
+        triple,
+        entry: "main".into(),
+        base: None,
+        efi: false,
+    };
+    let r = crate::link::link_paths(&[obj], exe, &opts).map_err(|e| e.message)?;
+    Ok(format!(
+        "{how}; built-in linker fallback ({})",
+        r.notes.join("; ")
+    ))
+}
+
+/// Compile a generated Host C file to an executable (TCC, then gcc/clang/cl).
+pub fn compile_host_c(
+    c_path: &Path,
+    exe: &Path,
+    debug: bool,
+    link_libs: &[String],
+) -> Result<String, String> {
+    if let Some(parent) = exe.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    match crate::tcc::compile_c_to_path(
+        c_path,
+        exe,
+        crate::tcc::OutputKind::Exe,
+        debug,
+        link_libs,
+    ) {
+        Ok(()) => return Ok("linked with embedded TCC".into()),
+        Err(err) => {
+            let _ = err;
+        }
+    }
+
+    let out_str = c_path.display().to_string();
+    let exe_str = exe.display().to_string();
+    for cc in ["gcc", "clang", "cl"] {
+        let mut cmd = Command::new(cc);
+        if cc == "cl" {
+            cmd.arg(&out_str).arg(format!("/Fe:{}", exe_str));
+            if debug {
+                cmd.arg("/Zi").arg("/Od");
+            }
+            for lib in link_libs {
+                if lib.ends_with(".dll") || lib.ends_with(".lib") {
+                    cmd.arg(lib);
+                } else {
+                    cmd.arg(format!("{}.lib", lib));
+                }
+            }
+        } else {
+            cmd.arg(&out_str);
+            if debug {
+                cmd.arg("-g").arg("-O0");
+            } else {
+                cmd.arg("-O2");
+            }
+            cmd.arg("-o").arg(&exe_str);
+            for lib in link_libs {
+                if lib.ends_with(".c") {
+                    cmd.arg(lib);
+                } else if lib.ends_with(".so")
+                    || lib.ends_with(".dylib")
+                    || lib.ends_with(".a")
+                    || lib.ends_with(".dll")
+                {
+                    cmd.arg(lib);
+                } else if lib.starts_with("lib") {
+                    cmd.arg(format!("-l{}", lib.trim_start_matches("lib")));
+                } else {
+                    cmd.arg(format!("-l{}", lib.trim_end_matches(".dll")));
+                }
+            }
+        }
+        if let Ok(st) = cmd.status() {
+            if st.success() {
+                return Ok(format!("linked with {cc}"));
+            }
+        }
+    }
+
+    if cfg!(windows) {
+        let mut cmd = Command::new("wsl");
+        cmd.arg("gcc").arg(out_str.replace('\\', "/"));
+        if debug {
+            cmd.arg("-g").arg("-O0");
+        } else {
+            cmd.arg("-O2");
+        }
+        let wsl_out = exe_str.replace('\\', "/").trim_end_matches(".exe").to_string();
+        if let Ok(st) = cmd.arg("-o").arg(&wsl_out).status() {
+            if st.success() {
+                return Ok("linked with wsl gcc".into());
+            }
+        }
+    }
+
+    Err("no working C compiler (tcc/gcc/clang/cl)".into())
+}
+

@@ -484,15 +484,61 @@ fn write_value(w: &mut Writer, v: &Value) {
                 crate::ffi::FfiAbi::Stdcall => 1,
                 crate::ffi::FfiAbi::System => 2,
             });
-            w.u8(f.ret as u8);
+            write_ffi_type(w, &f.ret);
             w.var_u32(f.params.len() as u32);
             for p in &f.params {
-                w.u8(*p as u8);
+                write_ffi_type(w, p);
             }
         }
         // Arrays/objects/dicts/tasks are runtime-only; store as null in constants
         Value::Array(_) | Value::Dict(_) | Value::Object(_) | Value::Task(_) => w.u8(0),
     }
+}
+
+fn write_ffi_type(w: &mut Writer, ty: &crate::ffi::FfiType) {
+    w.u8(ty.tag());
+    if let crate::ffi::FfiType::Struct(s) = ty {
+        w.var_str(&s.name);
+        w.var_u32(s.size as u32);
+        w.var_u32(s.align as u32);
+        w.u8(if s.packed { 1 } else { 0 });
+        w.var_u32(s.fields.len() as u32);
+        for f in &s.fields {
+            w.var_str(&f.name);
+            w.var_u32(f.offset as u32);
+            write_ffi_type(w, &f.ty);
+        }
+    }
+}
+
+fn read_ffi_type(r: &mut Reader<'_>) -> CompileResult<crate::ffi::FfiType> {
+    let tag = r.u8()?;
+    if tag != 14 {
+        return Ok(crate::ffi::FfiType::from_u8(tag));
+    }
+    let name = r.var_str()?;
+    let size = r.var_u32()? as usize;
+    let align = r.var_u32()? as usize;
+    let packed = r.u8()? != 0;
+    let n = r.var_u32()? as usize;
+    let mut fields = Vec::with_capacity(n);
+    for _ in 0..n {
+        let fname = r.var_str()?;
+        let offset = r.var_u32()? as usize;
+        let ty = read_ffi_type(r)?;
+        fields.push(crate::ffi::FfiFieldLayout {
+            name: fname,
+            offset,
+            ty,
+        });
+    }
+    Ok(crate::ffi::FfiType::Struct(crate::ffi::FfiStructLayout {
+        name,
+        size,
+        align,
+        fields,
+        packed,
+    }))
 }
 
 fn write_lines(w: &mut Writer, lines: &[usize]) {
@@ -582,11 +628,11 @@ fn read_value_v8(r: &mut Reader<'_>) -> CompileResult<Value> {
                 2 => crate::ffi::FfiAbi::System,
                 _ => crate::ffi::FfiAbi::Cdecl,
             };
-            let ret = crate::ffi::FfiType::from_u8(r.u8()?);
+            let ret = read_ffi_type(r)?;
             let n = r.u32()? as usize;
             let mut params = Vec::with_capacity(n);
             for _ in 0..n {
-                params.push(crate::ffi::FfiType::from_u8(r.u8()?));
+                params.push(read_ffi_type(r)?);
             }
             Value::Ffi(crate::ffi::FfiFunction {
                 name,
@@ -648,11 +694,11 @@ fn read_value_v9(r: &mut Reader<'_>) -> CompileResult<Value> {
                 2 => crate::ffi::FfiAbi::System,
                 _ => crate::ffi::FfiAbi::Cdecl,
             };
-            let ret = crate::ffi::FfiType::from_u8(r.u8()?);
+            let ret = read_ffi_type(r)?;
             let n = r.var_u32()? as usize;
             let mut params = Vec::with_capacity(n);
             for _ in 0..n {
-                params.push(crate::ffi::FfiType::from_u8(r.u8()?));
+                params.push(read_ffi_type(r)?);
             }
             Value::Ffi(crate::ffi::FfiFunction {
                 name,

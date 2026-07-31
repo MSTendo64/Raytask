@@ -1,0 +1,13 @@
+// STM32F103 Blue Pill — blink PC13 LED.
+//   raytask build examples/boards/stm32f103_bluepill/blink.rt --target embedded --no-gc
+//   cd examples/boards/stm32f103_bluepill/dist/blink_embedded && sh build.sh
+
+import bsp;
+
+void Main() {
+    LedInit();
+    while (true) {
+        LedToggle();
+        Spin(200000);
+    }
+}

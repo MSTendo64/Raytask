@@ -1,0 +1,19 @@
+// MPS2 AN385 / QEMU — UART0 hello + echo on QEMU -serial stdio.
+//   raytask build examples/boards/mps2_an385/uart_hello.rt --target embedded --no-gc
+//   cd .../dist/uart_hello_embedded && sh build.sh
+//   qemu-system-arm -M mps2-an385 -kernel firmware.elf -serial stdio -nographic
+
+import bsp;
+
+void Main() {
+    UartInit();
+    LedInit();
+    UartWriteHello();
+    while (true) {
+        if (UartDataReady()) {
+            var c = UartReadByte();
+            UartWriteByte(c);
+            LedToggle();
+        }
+    }
+}

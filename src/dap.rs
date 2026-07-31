@@ -453,6 +453,7 @@ fn run_debug_session(
         gc_stress: false,
         no_typecheck,
         no_stdlib: false,
+        optimize: crate::Optimize::None,
     };
 
     let module = if program

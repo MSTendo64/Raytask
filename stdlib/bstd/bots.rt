@@ -1,0 +1,5 @@
+//! Minimal HTTP API / bot helpers (hosted).
+
+export string HttpGet(url: string);
+export string HttpPost(url: string, body: string);
+export void BotReply(chat_id: string, text: string);

@@ -55,6 +55,15 @@ pub fn link(obj: &ObjectFile, target: LinkTarget, out: &Path) -> Result<PathBuf,
         LinkTarget::MacosX64 => link_macos(obj, out),
         LinkTarget::UefiX64 => link_uefi(obj, out),
         LinkTarget::RawX64 => link_raw(obj, out),
+        LinkTarget::Triple(t) => {
+            // Multi-arch / non-x64 payload path: prefer built-in smoke/layout writers.
+            use crate::native_triple::OsKind;
+            match t.os {
+                OsKind::Windows | OsKind::Uefi => link_windows(obj, out),
+                OsKind::Linux | OsKind::Freestanding => link_linux(obj, out),
+                OsKind::Macos => link_macos(obj, out),
+            }
+        }
     }
 }
 

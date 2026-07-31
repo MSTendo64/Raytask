@@ -28,9 +28,15 @@ enum Commands {
         /// Target: bytecode | native | app | wasm | web | mobile | embedded | kernel | native-bin | efi | raw
         #[arg(long, default_value = "bytecode")]
         target: TargetArg,
-        /// Target OS for --target app / native-bin: current | windows | linux | macos | uefi
+        /// Target OS for --target app / native / native-bin: current | windows | linux | macos | uefi
         #[arg(long, default_value = "current")]
         platform: String,
+        /// CPU arch: current | x86_64 | aarch64 | arm | i686
+        #[arg(long, default_value = "current")]
+        arch: String,
+        /// After SSA→C, compile to .o and link with the built-in ELF/COFF linker
+        #[arg(long)]
+        link_builtin: bool,
         /// Output path (for --target app)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -167,13 +173,20 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Link a .rtbc bytecode file into a native binary
+    /// Link .rtbc / .o / .obj into a native binary (payload packager or built-in linker)
     Link {
-        /// Input .rtbc file
-        file: PathBuf,
-        /// windows | linux | macos | uefi | raw | current
+        /// Input .rtbc or relocatable object (.o / .obj); multiple objects allowed
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<PathBuf>,
+        /// windows | linux | macos | uefi | raw | current | linux-aarch64 | …
         #[arg(long, default_value = "current")]
         platform: String,
+        /// CPU arch when platform is an OS name only: current | x86_64 | aarch64 | arm | i686
+        #[arg(long, default_value = "current")]
+        arch: String,
+        /// Entry symbol for object linking (default: _start, then main)
+        #[arg(long, default_value = "_start")]
+        entry: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -235,6 +248,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             file,
             target,
             platform,
+            arch,
+            link_builtin,
             output,
             optimize,
             no_gc,
@@ -248,6 +263,8 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 file,
                 target,
                 &platform,
+                &arch,
+                link_builtin,
                 output,
                 optimize,
                 no_gc,
@@ -265,7 +282,10 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         proj.name,
                         proj.version
                     );
-                    options.optimize = proj.build.optimize;
+            // Project defaults apply when the CLI left --optimize at its default (`none`).
+            if matches!(optimize, OptArg::None) {
+                options.optimize = proj.build.optimize;
+            }
                     if matches!(cli_target, TargetArg::Bytecode) {
                         // Only apply project target when user left default bytecode
                         // (clap default) — still override with project settings.
@@ -312,6 +332,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 gc_stress,
                 no_typecheck,
                 no_stdlib,
+                optimize: Optimize::None,
             };
             if !opts.gc {
                 println!("{} GC disabled (--no-gc)", "note:".yellow());
@@ -472,33 +493,88 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Commands::Link {
-            file,
+            files,
             platform,
+            arch,
+            entry,
             output,
         } => {
-            let bytes = std::fs::read(&file)?;
-            let link_target = raytask::linker::link_target_from_platform(&platform)
-                .ok_or_else(|| {
-                    format!(
-                        "unknown platform '{platform}' (use: current, windows, linux, macos, uefi, raw)"
-                    )
-                })?;
-            // raw platform alias
-            let link_target = if platform.eq_ignore_ascii_case("raw")
-                || platform.eq_ignore_ascii_case("bin")
-            {
-                raytask::native_codegen::LinkTarget::RawX64
+            let arch = raytask::native_triple::Arch::parse(&arch).ok_or_else(|| {
+                format!("unknown arch '{arch}' (use: current, x86_64, aarch64, arm, i686)")
+            })?;
+            let triple = if let Some(t) = raytask::native_triple::NativeTriple::parse(&platform) {
+                // If user passed OS-only, apply --arch
+                if raytask::native_triple::OsKind::parse(&platform).is_some()
+                    && !platform.contains('-')
+                {
+                    raytask::native_triple::NativeTriple::new(t.os, arch)
+                } else {
+                    t
+                }
             } else {
-                link_target
+                return Err(format!(
+                    "unknown platform '{platform}' (use: current, windows, linux, macos, uefi, raw, linux-aarch64, …)"
+                )
+                .into());
             };
+
+            let is_obj = |p: &Path| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("o" | "obj")
+                )
+            };
+            let all_obj = !files.is_empty() && files.iter().all(|f| is_obj(f));
             let out = output.unwrap_or_else(|| {
-                file.with_extension(link_target.default_ext())
+                let ext = if platform.eq_ignore_ascii_case("raw") {
+                    "bin"
+                } else {
+                    triple.default_ext()
+                };
+                files[0].with_extension(ext)
             });
-            let result = raytask::linker::link_rtbc(&bytes, link_target, &out, "linked")?;
-            for n in &result.notes {
-                println!("{} {}", "note:".cyan(), n);
+
+            if all_obj {
+                let opts = raytask::link::BuiltinLinkOptions {
+                    triple,
+                    entry,
+                    base: None,
+                    efi: matches!(
+                        triple.os,
+                        raytask::native_triple::OsKind::Uefi
+                    ),
+                };
+                let result = raytask::link::link_paths(&files, &out, &opts)?;
+                for n in &result.notes {
+                    println!("{} {}", "note:".cyan(), n);
+                }
+                println!("{} {}", "Linked".green().bold(), result.output.display());
+            } else if files.len() == 1
+                && files[0]
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("rtbc"))
+            {
+                let bytes = std::fs::read(&files[0])?;
+                let link_target = raytask::native_codegen::LinkTarget::from_triple(triple);
+                let link_target = if platform.eq_ignore_ascii_case("raw")
+                    || platform.eq_ignore_ascii_case("bin")
+                {
+                    raytask::native_codegen::LinkTarget::RawX64
+                } else {
+                    link_target
+                };
+                let result =
+                    raytask::linker::link_rtbc(&bytes, link_target, &out, "linked")?;
+                for n in &result.notes {
+                    println!("{} {}", "note:".cyan(), n);
+                }
+                println!("{} {}", "Linked".green().bold(), result.output.display());
+            } else {
+                return Err(
+                    "link: pass one .rtbc, or one/more .o/.obj for the built-in linker".into(),
+                );
             }
-            println!("{} {}", "Linked".green().bold(), result.output.display());
         }
         Commands::Bind {
             header,
@@ -571,6 +647,8 @@ fn resolve_build_context(
     file: Option<PathBuf>,
     target: TargetArg,
     platform: &str,
+    arch: &str,
+    link_builtin: bool,
     output: Option<PathBuf>,
     optimize: OptArg,
     no_gc: bool,
@@ -581,6 +659,9 @@ fn resolve_build_context(
     let file = resolve_entry(file)?;
     let platform = Platform::parse(platform).ok_or_else(|| {
         format!("unknown platform '{platform}' (use: current, windows, linux, macos, uefi)")
+    })?;
+    let arch = raytask::native_triple::Arch::parse(arch).ok_or_else(|| {
+        format!("unknown arch '{arch}' (use: current, x86_64, aarch64, arm, i686)")
     })?;
     let options = BuildOptions {
         target: match target {
@@ -605,6 +686,8 @@ fn resolve_build_context(
         gc_stress: false,
         debug,
         platform,
+        arch,
+        link_builtin,
         output,
         no_typecheck,
         no_stdlib,

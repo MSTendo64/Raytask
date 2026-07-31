@@ -51,6 +51,8 @@ pub struct Compiler {
     functions: HashMap<String, usize>,
     /// Bodyless FFI import names (no bytecode chunk used at call time).
     ffi_names: HashSet<String>,
+    /// C layouts for `[repr: "C"]` / packed structs (by-value FFI).
+    struct_layouts: HashMap<String, crate::ffi::FfiStructLayout>,
     /// Current default library from nearest [link:]/[DllImport:]
     current_link: Option<String>,
     embed_counter: usize,
@@ -89,6 +91,7 @@ impl Compiler {
             classes: HashMap::new(),
             functions: HashMap::new(),
             ffi_names: HashSet::new(),
+            struct_layouts: HashMap::new(),
             current_link: None,
             embed_counter: 0,
             loop_stack: Vec::new(),
@@ -276,6 +279,10 @@ impl Compiler {
                 Ok(())
             }
             Item::Struct(s) => {
+                if s.repr_c || s.packed || s.align.is_some() {
+                    let layout = crate::abi::layout_struct(s, &self.struct_layouts);
+                    self.struct_layouts.insert(s.name.clone(), layout);
+                }
                 // Treat structs like classes for VM
                 let class_idx = self.module.classes.len();
                 let mut info = ClassInfo {
@@ -318,6 +325,31 @@ impl Compiler {
                 self.ensure_global(&s.name);
                 Ok(())
             }
+            Item::Union(u) => {
+                let layout = crate::abi::layout_union(u, &self.struct_layouts);
+                self.struct_layouts.insert(u.name.clone(), layout);
+                // VM: unions lower like structs (overlapping is native/C only).
+                let class_idx = self.module.classes.len();
+                let mut info = ClassInfo {
+                    name: u.name.clone(),
+                    fields: Vec::new(),
+                    methods: Vec::new(),
+                    constructor: None,
+                    base: None,
+                    destructor: None,
+                };
+                for m in &u.members {
+                    if let Member::Field(f) = m {
+                        if !f.is_static {
+                            info.fields.push(f.name.clone());
+                        }
+                    }
+                }
+                self.classes.insert(u.name.clone(), class_idx);
+                self.module.classes.push(info);
+                self.ensure_global(&u.name);
+                Ok(())
+            }
             Item::Interface(_) | Item::Import(_) | Item::Module(_) | Item::Const(_) => Ok(()),
         }
     }
@@ -335,6 +367,19 @@ impl Compiler {
             Item::Function(f) => self.compile_function(f, &attrs),
             Item::Class(c) => self.compile_class(c),
             Item::Struct(s) => self.compile_struct(s),
+            Item::Union(u) => {
+                // Register type module symbol; fields already declared.
+                let line = u.span.line;
+                let prev = self.current;
+                self.current = 0;
+                self.chunk()
+                    .emit_constant(Value::TypeModule(u.name.clone().into()), line);
+                let g = self.ensure_global(&u.name);
+                self.chunk().emit_op(Op::DefineGlobal, line);
+                self.chunk().emit_byte(g, line);
+                self.current = prev;
+                Ok(())
+            }
             Item::Const(c) => {
                 let line = c.span.line;
                 self.compile_expr(&c.value)?;
@@ -394,8 +439,13 @@ impl Compiler {
         all_attrs.extend(f.attributes.iter().cloned());
 
         if ffi::is_ffi_import(f) || self.ffi_names.contains(&f.name) {
-            let ffi_fn = ffi::ffi_from_function(f, self.current_link.as_deref(), &all_attrs)
-                .map_err(|m| CompileError::syntax(m, f.span))?;
+            let ffi_fn = ffi::ffi_from_function_with(
+                f,
+                self.current_link.as_deref(),
+                &all_attrs,
+                &self.struct_layouts,
+            )
+            .map_err(|m| CompileError::syntax(m, f.span))?;
             let line = f.span.line;
             let prev = self.current;
             self.current = 0;
@@ -1509,6 +1559,10 @@ impl Compiler {
                 }
             }
             Stmt::Unsafe(body, _) => self.compile_block(body)?,
+            Stmt::Asm { span, .. } => {
+                // Inline asm is a native/C escape; VM treats as no-op.
+                let _ = span;
+            }
             Stmt::Match { expr, arms, span } => {
                 self.compile_expr(expr)?;
                 let mut end_jumps = Vec::new();
@@ -2119,6 +2173,30 @@ impl Compiler {
             Expr::TypeOf(_, _) => {
                 self.chunk()
                     .emit_constant(Value::String("Type".into()), line);
+            }
+            Expr::SizeOf(ty, _) => {
+                let n = if let Some(layout) = self.struct_layouts.get(&ty.name) {
+                    layout.size as i64
+                } else {
+                    crate::abi::primitive_size_align(&ty.name)
+                        .map(|(s, _)| s as i64)
+                        .unwrap_or(8)
+                };
+                self.chunk().emit_constant(Value::Int(n), line);
+            }
+            Expr::OffsetOf { ty, field, .. } => {
+                let n = self
+                    .struct_layouts
+                    .get(&ty.name)
+                    .and_then(|layout| {
+                        layout
+                            .fields
+                            .iter()
+                            .find(|f| f.name == *field)
+                            .map(|f| f.offset as i64)
+                    })
+                    .unwrap_or(0);
+                self.chunk().emit_constant(Value::Int(n), line);
             }
             Expr::Deref(e, _) | Expr::AddressOf(e, _) | Expr::Try(e, _) => {
                 self.compile_expr(e)?;

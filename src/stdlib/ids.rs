@@ -25,6 +25,10 @@ pub const SIZEOF: usize = 21;
 pub const REGEX_NEW: usize = 22;
 pub const OK: usize = 23;
 pub const ERR: usize = 24;
+pub const MMIO_READ32: usize = 25;
+pub const MMIO_WRITE32: usize = 26;
+pub const SPIN: usize = 27;
+pub const IS_FREESTANDING: usize = 28;
 
 // ---- List / Array methods (receiver first) ----
 pub const LIST_ADD: usize = 100;

@@ -48,10 +48,47 @@ project "myapp" {
 raytask check src/main.rt          # parse + typecheck
 raytask run src/main.rt            # typecheck + VM
 raytask build src/main.rt          # write .rtbc
+raytask build src/main.rt --optimize speed
 raytask build src/main.rt --target native
 raytask tcc examples/tcc/hello.c -o hello.exe
 raytask tcc -run examples/tcc/hello.c -- demo
 ```
+
+### Optimization (`--optimize`)
+
+Bytecode-producing targets run through a mid-level SSA IR:
+
+| Level | Effect |
+|-------|--------|
+| `none` (default) | AST → bytecode → SSA lift (validation) → keep original bytecode |
+| `speed` | Full pipeline: CFG simplify, mem2reg, SCCP, const fold, copy prop, GVN/CSE, DCE, LICM, strength reduction, aggressive inlining, cleanup |
+| `size` | Same core passes with conservative inlining; skips code-growing strength reduction |
+
+```bash
+raytask build src/main.rt --optimize speed -o out.rtbc
+```
+
+`project.rtp` may set `build.optimize = "speed"`; an explicit CLI `--optimize` overrides the project default.
+
+AST→C for host `transpile_c` still starts from the AST; **`embedded` / `kernel` / `native` / `native-bin` use SSA → C**. Host AOT links with TCC/gcc into a real binary with **no RTBC interpreter** (`--target app` keeps stub+bytecode).
+
+## Systems / bare metal
+
+RayTask can target firmware and kernels without abandoning managed apps:
+
+```bash
+raytask build examples/systems/blink.rt --target embedded --no-gc
+raytask build examples/boards/mps2_an385/uart_hello.rt --target embedded --no-gc
+raytask build kernel.rt --target kernel
+```
+
+Board kits (`examples/boards/`) ship real `link.ld` + `startup.c` + GPIO/UART BSPs (STM32 Blue Pill, MPS2 AN385 / QEMU). Sibling board assets are copied into `dist/*_embedded/` automatically.
+
+`--target embedded|kernel` lowers **optimized SSA** to C (`--optimize speed|size` recommended). Types / `[address:]` / consts still come from the AST; function bodies are SSA block CFGs (`goto bbN`).
+
+Language extras for C-like work: `union`, `[packed]`, `[align: N]`, `[repr: "C"]`, `volatile T`, `sizeof(T)`, `offsetof(T, field)`, `unsafe { asm("nop"); }`.
+
+See `docs/spec/05-systems.md` and `docs/ROADMAP.md`.
 
 GC controls:
 
@@ -165,30 +202,50 @@ void Main() {
 | Command | Purpose |
 |---------|---------|
 | `--target bytecode` | VM module (`.rtbc`) |
-| `--target native` | C source / host binary (vendored TCC first) |
-| `--target app` | single executable with embedded runtime |
-| `--target wasm` | WebAssembly scaffold |
-| `--target web` | browser bundle |
+| `--target native` | **True AOT**: SSA → C → TCC/gcc/clang (no RTBC VM); `--arch` / `--platform` for cross |
+| `--target native-bin` | same True AOT as `native` (UEFI platform still uses payload packaging) |
+| `--target app` | standalone app = runtime stub + embedded `.rtbc` |
+| `--target wasm` | C + HTML shell (+ emcc/clang when available) |
+| `--target web` | web bundle (wasm scaffold + bytecode assets) |
 | `--target mobile` | Android + iOS scaffolds |
-| `--target embedded` | freestanding / MCU-oriented C |
-| `--target kernel` | freestanding kernel-style C (no GC) |
-| `--target native-bin` | NativeCodeGen + Linker (OS binary from bytecode) |
-| `--target efi` | UEFI `.efi` application |
-| `--target raw` | flat `.bin` image |
+| `--target embedded` | freestanding / MCU-oriented C (SSA→C) |
+| `--target kernel` | freestanding kernel C (SSA→C) |
+| `--target efi` | UEFI `.efi` (mini-interp / payload packaging) |
+| `--target raw` | flat `.bin` image (payload packaging) |
 
-### Native binaries from bytecode
+### True AOT (`native` / `native-bin`)
 
 ```bash
-raytask build main.rt --target native-bin --platform windows
-raytask build main.rt --target native-bin --platform linux
-raytask build main.rt --target native-bin --platform macos
+raytask build main.rt --target native --optimize speed
+raytask build main.rt --target native-bin -o app.exe
+raytask build main.rt --target native --platform linux --arch aarch64
+raytask build main.rt --target native --link-builtin   # .o + built-in linker
+```
+
+Pipeline: `.rt` → SSA → C (Host runtime) → **TCC / gcc / clang** → PE/ELF.  
+Cross: `clang`/`zig cc` `-target <triple>`. Arches: `x86_64`, `aarch64`, `arm`, `i686`.  
+`--link-builtin` compiles to `.o` and links with RayTask’s ELF/COFF linker (best for freestanding).  
+The binary does **not** embed an RTBC interpreter. Use `--target app` for stub + bytecode.
+
+### Built-in linker
+
+```bash
+raytask link a.o b.o --platform linux --arch x86_64 -o app.elf --entry _start
+raytask link main.rtbc --platform windows -o app.exe   # RTBC payload packager
+```
+
+The object path parses ELF64 / COFF, merges sections, resolves symbols, applies common relocs, and emits PE32+ or ELF64 executables.
+
+### Payload / EFI packaging
+
+```bash
 raytask build main.rt --target efi
 raytask build main.rt --target raw
-raytask build main.rt --target bytecode
+raytask build main.rt --target app
 raytask link main.rtbc --platform uefi -o main.efi
 ```
 
-Pipeline: `.rt` → RTBC → **NativeCodeGen** (`ObjectFile`) → **Linker** (PE / ELF / Mach-O / EFI / raw).
+`efi` / `raw` / `.rtbc` link still package RTBC (or a UEFI mini-interpreter). That is separate from Host True AOT.
 
 ### Vendored TinyCC backend
 
@@ -335,6 +392,8 @@ int foreign_add(a: int, b: int);
 int add(int a, int b) { return a + b; }
 "]
 ```
+
+`[repr: "C"]` structs in FFI signatures are passed/returned **by value** (C ABI): small aggregates (1/2/4/8 bytes) in a register; larger via pointer-to-copy / sret. C codegen emits `extern Point f(...)` rather than `Point*`.
 
 See `examples/ffi_demo.rt`, `examples/ffi_header/main.rt`, `examples/ffi_embed.rt`.
 

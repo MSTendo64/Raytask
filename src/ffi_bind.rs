@@ -118,7 +118,7 @@ fn proto_to_item(proto: &CPrototype, lib: &str) -> Item {
             is_params: false,
             is_this: false,
             name: format!("a{i}"),
-            ty: ffi_to_type_ref(*t),
+            ty: ffi_to_type_ref(t),
             default: None,
             span,
         })
@@ -133,7 +133,7 @@ fn proto_to_item(proto: &CPrototype, lib: &str) -> Item {
         is_override: false,
         is_abstract: false,
         is_extension: false,
-        return_type: ffi_to_type_ref(proto.ret),
+        return_type: ffi_to_type_ref(&proto.ret),
         name: proto.name.clone(),
         type_params: vec![],
         params,
@@ -149,7 +149,7 @@ fn proto_to_item(proto: &CPrototype, lib: &str) -> Item {
     Item::Function(f)
 }
 
-fn ffi_to_type_ref(t: FfiType) -> TypeRef {
+fn ffi_to_type_ref(t: &FfiType) -> TypeRef {
     let name = match t {
         FfiType::Void => "void",
         FfiType::Bool => "bool",
@@ -165,6 +165,7 @@ fn ffi_to_type_ref(t: FfiType) -> TypeRef {
         FfiType::F64 => "double",
         FfiType::Ptr => "ptr",
         FfiType::CString => "string",
+        FfiType::Struct(s) => return TypeRef::named(&s.name, Span::default()),
     };
     TypeRef::named(name, Span::default())
 }

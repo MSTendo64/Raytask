@@ -448,6 +448,10 @@ pub fn builtin_functions() -> Vec<(&'static str, Vec<Ty>, Ty)> {
         ("malloc", vec![Ty::Int], Ty::Ptr(Box::new(Ty::Byte))),
         ("free", vec![Ty::Ptr(Box::new(Ty::Byte))], Ty::Void),
         ("sizeof", vec![Ty::Dyn], Ty::Int),
+        ("MmioRead32", vec![Ty::Long], Ty::Int),
+        ("MmioWrite32", vec![Ty::Long, Ty::Int], Ty::Void),
+        ("Spin", vec![Ty::Int], Ty::Void),
+        ("IsFreestanding", vec![], Ty::Bool),
         ("regex", vec![Ty::String], Ty::Named("Regex".into())),
         ("Ok", vec![Ty::Dyn], Ty::Generic {
             name: "Result".into(),

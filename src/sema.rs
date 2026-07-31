@@ -650,6 +650,20 @@ impl TypeChecker {
             }
             Item::Class(c) => self.collect_class(c),
             Item::Struct(s) => self.collect_struct(s),
+            Item::Union(u) => {
+                // Register like a struct type for name resolution.
+                self.collect_struct(&StructDecl {
+                    access: u.access.clone(),
+                    name: u.name.clone(),
+                    type_params: vec![],
+                    members: u.members.clone(),
+                    attributes: u.attributes.clone(),
+                    packed: u.packed,
+                    align: u.align,
+                    repr_c: true,
+                    span: u.span,
+                });
+            }
             Item::Interface(i) => self.collect_interface(i),
             Item::Function(f) => self.collect_function(f, false),
             Item::Const(c) => {
@@ -1216,6 +1230,19 @@ impl TypeChecker {
             }
             Item::Class(c) => self.check_class(c),
             Item::Struct(s) => self.check_struct(s),
+            Item::Union(u) => {
+                self.check_struct(&StructDecl {
+                    access: u.access.clone(),
+                    name: u.name.clone(),
+                    type_params: vec![],
+                    members: u.members.clone(),
+                    attributes: u.attributes.clone(),
+                    packed: u.packed,
+                    align: u.align,
+                    repr_c: true,
+                    span: u.span,
+                });
+            }
             Item::Interface(_) => {} // signatures only
             Item::Function(f) => {
                 if f.is_static {
@@ -1804,6 +1831,11 @@ impl TypeChecker {
                 self.check_block(body);
                 self.in_unsafe = prev;
             }
+            Stmt::Asm { span, .. } => {
+                if !self.in_unsafe {
+                    self.err("inline asm requires an 'unsafe' block", *span);
+                }
+            }
             Stmt::Block(b) => self.check_block(b),
         }
     }
@@ -1986,6 +2018,14 @@ impl TypeChecker {
                 to
             }
             Expr::TypeOf(_, _) => Ty::Named("Type".into()),
+            Expr::SizeOf(ty, _) => {
+                let _ = self.resolve_type_ref(ty);
+                Ty::Int
+            }
+            Expr::OffsetOf { ty, .. } => {
+                let _ = self.resolve_type_ref(ty);
+                Ty::Int
+            }
             Expr::Is { expr, .. } => {
                 let _ = self.check_expr(expr);
                 Ty::Bool

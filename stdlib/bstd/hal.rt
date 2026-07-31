@@ -1,0 +1,18 @@
+//! Hardware abstraction for bare-metal / drivers / MCU.
+//!
+//! Hosted VM: MMIO helpers are no-ops (reads return 0).
+//! Native embedded/kernel C: real volatile pointer access.
+//!
+//! Board kits with UART/GPIO: `examples/boards/`.
+
+/// Read a 32-bit MMIO register (native: cast address; VM: returns 0).
+export int MmioRead32(addr: long);
+
+/// Write a 32-bit MMIO register.
+export void MmioWrite32(addr: long, value: int);
+
+/// Busy-wait loop hint for MCU examples.
+export void Spin(cycles: int);
+
+/// True when compiled with freestanding C (`--target embedded|kernel`).
+export bool IsFreestanding();

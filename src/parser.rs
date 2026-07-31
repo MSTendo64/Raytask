@@ -144,6 +144,8 @@ impl Parser {
                 Item::Class(self.parse_class(access, is_abstract)?)
             } else if self.check(&TokenKind::Struct) {
                 Item::Struct(self.parse_struct(access)?)
+            } else if self.check(&TokenKind::Union) {
+                Item::Union(self.parse_union(access)?)
             } else if self.check(&TokenKind::Interface) {
                 Item::Interface(self.parse_interface(access)?)
             } else {
@@ -155,6 +157,7 @@ impl Parser {
         if attrs.is_empty() {
             Ok(item)
         } else {
+            let item = apply_layout_attributes(item, &attrs);
             let mut wrapped = item;
             for attr in attrs.into_iter().rev() {
                 wrapped = Item::Attribute(attr, Box::new(wrapped));
@@ -439,6 +442,30 @@ impl Parser {
             type_params,
             members,
             attributes: vec![],
+            packed: false,
+            align: None,
+            repr_c: false,
+            span: start.merge(self.previous().span),
+        })
+    }
+
+    fn parse_union(&mut self, access: Access) -> CompileResult<UnionDecl> {
+        let start = self.current().span;
+        self.expect(TokenKind::Union, "expected 'union'")?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(TokenKind::LBrace, "expected '{'")?;
+        let mut members = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_at_end() {
+            members.push(self.parse_member()?);
+        }
+        self.expect(TokenKind::RBrace, "expected '}'")?;
+        Ok(UnionDecl {
+            access,
+            name,
+            members,
+            attributes: vec![],
+            packed: false,
+            align: None,
             span: start.merge(self.previous().span),
         })
     }
@@ -941,11 +968,13 @@ impl Parser {
                 | TokenKind::Ptr
                 | TokenKind::Dyn
                 | TokenKind::Var
+                | TokenKind::Volatile
         )
     }
 
     fn parse_type_ref(&mut self) -> CompileResult<TypeRef> {
         let start = self.current().span;
+        let volatile = self.match_kind(&[TokenKind::Volatile]);
         let name = match &self.current().kind {
             TokenKind::Ident(s) => {
                 let s = s.clone();
@@ -1064,6 +1093,7 @@ impl Parser {
             nullable,
             is_array,
             array_dims,
+            volatile,
             span: start.merge(self.previous().span),
         })
     }
@@ -1132,6 +1162,30 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::Unsafe(body, start.merge(self.previous().span)))
             }
+            TokenKind::Asm => {
+                let start = self.current().span;
+                self.advance();
+                self.expect(TokenKind::LParen, "expected '(' after asm")?;
+                let template = match &self.current().kind {
+                    TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
+                        let s = s.clone();
+                        self.advance();
+                        s
+                    }
+                    _ => {
+                        return Err(CompileError::syntax(
+                            "expected string literal in asm(...)",
+                            self.current().span,
+                        ));
+                    }
+                };
+                self.expect(TokenKind::RParen, "expected ')'")?;
+                self.expect(TokenKind::Semicolon, "expected ';' after asm")?;
+                Ok(Stmt::Asm {
+                    template,
+                    span: start.merge(self.previous().span),
+                })
+            }
             TokenKind::Const => Ok(Stmt::Const(self.parse_const_decl()?)),
             TokenKind::Var
             | TokenKind::Dyn
@@ -1153,6 +1207,9 @@ impl Parser {
         // Heuristic: Type Ident (=|;|,)
         // Skip type-like tokens then check Ident
         let mut i = 0;
+        if matches!(self.peek_kind(i), Some(TokenKind::Volatile)) {
+            i += 1;
+        }
         // skip type name
         match self.peek_kind(i) {
             Some(TokenKind::Ident(_))
@@ -2218,6 +2275,26 @@ impl Parser {
                 self.expect(TokenKind::RParen, "expected ')'")?;
                 Ok(Expr::TypeOf(ty, span.merge(self.previous().span)))
             }
+            TokenKind::Sizeof => {
+                self.advance();
+                self.expect(TokenKind::LParen, "expected '('")?;
+                let ty = self.parse_type_ref()?;
+                self.expect(TokenKind::RParen, "expected ')'")?;
+                Ok(Expr::SizeOf(ty, span.merge(self.previous().span)))
+            }
+            TokenKind::Offsetof => {
+                self.advance();
+                self.expect(TokenKind::LParen, "expected '('")?;
+                let ty = self.parse_type_ref()?;
+                self.expect(TokenKind::Comma, "expected ','")?;
+                let (field, _) = self.expect_ident()?;
+                self.expect(TokenKind::RParen, "expected ')'")?;
+                Ok(Expr::OffsetOf {
+                    ty,
+                    field,
+                    span: span.merge(self.previous().span),
+                })
+            }
             TokenKind::LParen => {
                 self.advance();
                 // Could be grouped expr, cast (type)expr, or lambda (a: int) =>
@@ -2494,5 +2571,48 @@ impl Parser {
             parts.push(InterpPart::Literal(literal));
         }
         Ok(Expr::Interpolated(parts, span))
+    }
+}
+
+fn apply_layout_attributes(item: Item, attrs: &[Attribute]) -> Item {
+    match item {
+        Item::Struct(mut s) => {
+            for a in attrs {
+                match a.name.as_str() {
+                    "packed" => s.packed = true,
+                    "align" => {
+                        if let Some(Expr::Int(n, _)) = &a.value {
+                            s.align = Some(*n as u32);
+                        }
+                    }
+                    "repr" => {
+                        if let Some(Expr::String(v, _)) = &a.value {
+                            if v.eq_ignore_ascii_case("c") {
+                                s.repr_c = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            s.attributes.extend(attrs.iter().cloned());
+            Item::Struct(s)
+        }
+        Item::Union(mut u) => {
+            for a in attrs {
+                match a.name.as_str() {
+                    "packed" => u.packed = true,
+                    "align" => {
+                        if let Some(Expr::Int(n, _)) = &a.value {
+                            u.align = Some(*n as u32);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            u.attributes.extend(attrs.iter().cloned());
+            Item::Union(u)
+        }
+        other => other,
     }
 }

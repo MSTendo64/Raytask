@@ -1,0 +1,5 @@
+//! Game loop scaffolding (input/time). Real graphics backends are platform packages.
+
+export long GameTicks();
+export bool KeyDown(code: int);
+export void GameQuit();

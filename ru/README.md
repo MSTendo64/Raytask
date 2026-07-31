@@ -87,7 +87,7 @@ raytask doc
 | `efi` / `raw` | UEFI `.efi` или плоский `.bin` |
 | `wasm` / `web` | WASM/HTML-бандл (+ bytecode для web) |
 | `mobile` | scaffolds Android / iOS |
-| `embedded` / `kernel` | freestanding C (+ атрибуты ISR / MMIO) |
+| `embedded` / `kernel` | freestanding C (+ атрибуты ISR / MMIO); платы: `examples/boards/` |
 
 Удалённый registry: `RAYTASK_REGISTRY_URL` (`index.json` + packages).
 

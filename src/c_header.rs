@@ -1,9 +1,10 @@
 //! Minimal C header parser — extract function prototypes for RayTask FFI.
 //!
-//! Supported subset (no full preprocessor / structs-by-value):
+//! Supported subset:
 //! - `//` and `/* */` comments
 //! - `#include "local.h"` (relative; system `<...>` skipped)
 //! - `typedef` aliases for scalar / pointer types
+//! - Opaque `struct` / `union` tags registered as `Ptr` for FFI params
 //! - Function prototypes: `Ret name(T a, U b);`
 //! - Common stdint / Windows typedefs built-in
 
@@ -175,10 +176,20 @@ fn parse_source_into(
             continue;
         }
 
-        // skip struct/enum/union definitions (brace-balanced) and lone ;
-        if starts_with_word(&text, i, "struct")
-            || starts_with_word(&text, i, "enum")
-            || starts_with_word(&text, i, "union")
+        // struct/union: register tag as opaque Ptr, then skip body/definition
+        if starts_with_word(&text, i, "struct") || starts_with_word(&text, i, "union") {
+            let is_struct = starts_with_word(&text, i, "struct");
+            i += if is_struct { "struct".len() } else { "union".len() };
+            skip_ws(&text, &mut i);
+            if let Some(tag) = read_ident(&text, &mut i) {
+                header.typedefs.entry(tag).or_insert(FfiType::Ptr);
+            }
+            skip_decl_or_def(&text, &mut i);
+            continue;
+        }
+
+        // skip enum definitions and lone ;
+        if starts_with_word(&text, i, "enum")
             || starts_with_word(&text, i, "extern")
         {
             // May be `extern Ret name(...);` — handle extern by skipping keyword
@@ -649,7 +660,7 @@ fn parse_c_type(
         }
     } {
         if let Some(t) = typedefs.get(&id) {
-            base = Some(*t);
+            base = Some(t.clone());
         } else {
             base = Some(FfiType::Ptr);
         }
@@ -678,12 +689,12 @@ fn parse_c_type(
 pub fn prototypes_to_raytask(lib: &str, protos: &[CPrototype]) -> String {
     let mut out = format!("[DllImport: \"{}\"]\n", lib);
     for p in protos {
-        let ret = ffi_type_to_rt(p.ret);
+        let ret = ffi_type_to_rt(&p.ret);
         let args: Vec<String> = p
             .params
             .iter()
             .enumerate()
-            .map(|(i, t)| format!("a{}: {}", i, ffi_type_to_rt(*t)))
+            .map(|(i, t)| format!("a{}: {}", i, ffi_type_to_rt(t)))
             .collect();
         out.push_str(&format!(
             "{} {}({});\n",
@@ -695,22 +706,23 @@ pub fn prototypes_to_raytask(lib: &str, protos: &[CPrototype]) -> String {
     out
 }
 
-fn ffi_type_to_rt(t: FfiType) -> &'static str {
+fn ffi_type_to_rt(t: &FfiType) -> String {
     match t {
-        FfiType::Void => "void",
-        FfiType::Bool => "bool",
-        FfiType::I8 => "byte",
-        FfiType::I16 => "short",
-        FfiType::I32 => "int",
-        FfiType::I64 => "long",
-        FfiType::U8 => "ubyte",
-        FfiType::U16 => "ushort",
-        FfiType::U32 => "uint",
-        FfiType::U64 => "ulong",
-        FfiType::F32 => "float",
-        FfiType::F64 => "double",
-        FfiType::Ptr => "ptr",
-        FfiType::CString => "string",
+        FfiType::Void => "void".into(),
+        FfiType::Bool => "bool".into(),
+        FfiType::I8 => "byte".into(),
+        FfiType::I16 => "short".into(),
+        FfiType::I32 => "int".into(),
+        FfiType::I64 => "long".into(),
+        FfiType::U8 => "ubyte".into(),
+        FfiType::U16 => "ushort".into(),
+        FfiType::U32 => "uint".into(),
+        FfiType::U64 => "ulong".into(),
+        FfiType::F32 => "float".into(),
+        FfiType::F64 => "double".into(),
+        FfiType::Ptr => "ptr".into(),
+        FfiType::CString => "string".into(),
+        FfiType::Struct(s) => s.name.clone(),
     }
 }
 

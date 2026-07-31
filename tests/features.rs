@@ -87,6 +87,7 @@ fn no_stdlib_allows_plain_language_build() {
             gc_stress: false,
             no_typecheck: false,
             no_stdlib: true,
+            optimize: raytask::Optimize::None,
         },
     )
     .unwrap();

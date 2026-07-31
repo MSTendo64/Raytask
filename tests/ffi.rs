@@ -76,6 +76,54 @@ fn embed_c_add_when_compiler_available() {
 }
 
 #[test]
+fn embed_c_struct_by_value_when_compiler_available() {
+    let src = r#"
+        [repr: "C"]
+        struct Point {
+            int x;
+            int y;
+            new(x: int, y: int) {
+                this.x = x;
+                this.y = y;
+            }
+        }
+
+        [c: "
+        typedef struct { int x; int y; } Point;
+        Point ray_add_points(Point a, Point b) {
+            Point r;
+            r.x = a.x + b.x;
+            r.y = a.y + b.y;
+            return r;
+        }
+        "]
+        [link: "raytask_embed_1"]
+        Point ray_add_points(a: Point, b: Point);
+
+        void Main() {
+            var a = new Point(1, 2);
+            var b = new Point(3, 4);
+            var r = ray_add_points(a, b);
+            assertEq(r.x, 4);
+            assertEq(r.y, 6);
+        }
+    "#;
+    match run_source(src) {
+        Ok(()) => {}
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("no working C compiler")
+                    || msg.contains("failed to compile")
+                    || msg.contains("failed to load library")
+                    || msg.contains("LoadLibrary"),
+                "unexpected error: {msg}"
+            );
+        }
+    }
+}
+
+#[test]
 fn transpile_emits_extern_and_include() {
     let src = r#"
         [include: "math.h"]
@@ -87,4 +135,27 @@ fn transpile_emits_extern_and_include() {
     let c = raytask::transpile_c(src).unwrap();
     assert!(c.contains("#include \"math.h\"") || c.contains("#include <math.h>"));
     assert!(c.contains("extern") && c.contains("cos"));
+}
+
+#[test]
+fn transpile_repr_c_ffi_by_value() {
+    let src = r#"
+        [repr: "C"]
+        struct Point {
+            int x;
+            int y;
+        }
+        [DllImport: "m"]
+        Point make_point(x: int, y: int);
+        void Main() {}
+    "#;
+    let c = raytask::transpile_c(src).unwrap();
+    assert!(
+        c.contains("extern Point make_point("),
+        "expected by-value Point in extern: {c}"
+    );
+    assert!(
+        !c.contains("extern Point* make_point"),
+        "must not pass Point as pointer in FFI signature"
+    );
 }

@@ -1,0 +1,18 @@
+// STM32F103 Blue Pill — USART1 hello + echo (PA9 TX / PA10 RX, 115200 8N1).
+//   raytask build examples/boards/stm32f103_bluepill/uart_hello.rt --target embedded --no-gc
+//   cd .../dist/uart_hello_embedded && sh build.sh
+
+import bsp;
+
+void Main() {
+    UartInit();
+    LedInit();
+    UartWriteHello();
+    while (true) {
+        if (UartDataReady()) {
+            var c = UartReadByte();
+            UartWriteByte(c);
+            LedToggle();
+        }
+    }
+}

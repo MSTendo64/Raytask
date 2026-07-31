@@ -82,6 +82,7 @@ fn subst_type(ty: &TypeRef, map: &HashMap<String, TypeRef>) -> TypeRef {
         nullable: ty.nullable,
         is_array: ty.is_array,
         array_dims: ty.array_dims,
+        volatile: ty.volatile,
         span: ty.span,
     }
 }
@@ -450,6 +451,7 @@ impl Mono {
                 self.collect_expr(&c.value)
             }
             Stmt::Block(b) | Stmt::Unsafe(b, _) => self.collect_block(b),
+            Stmt::Asm { .. } => {}
             Stmt::If {
                 cond,
                 then_block,
@@ -612,7 +614,10 @@ impl Mono {
                     }
                 }
             }
-            Expr::TypeOf(ty, _) => {
+            Expr::TypeOf(ty, _) | Expr::SizeOf(ty, _) => {
+                self.collect_type_ref(ty);
+            }
+            Expr::OffsetOf { ty, .. } => {
                 self.collect_type_ref(ty);
             }
             _ => {}
@@ -684,6 +689,14 @@ impl Mono {
                     .map(|m| self.rewrite_member(m))
                     .collect();
                 Item::Struct(s)
+            }
+            Item::Union(mut u) => {
+                u.members = u
+                    .members
+                    .into_iter()
+                    .map(|m| self.rewrite_member(m))
+                    .collect();
+                Item::Union(u)
             }
             Item::Const(mut c) => {
                 c.ty = self.rewrite_type_ref(c.ty);
@@ -882,6 +895,10 @@ impl Mono {
                 }
             }
             Stmt::Unsafe(b, s) => Stmt::Unsafe(self.rewrite_block(b), s),
+            Stmt::Asm { template, span } => Stmt::Asm {
+                template,
+                span,
+            },
             Stmt::Switch { expr, cases, span } => Stmt::Switch {
                 expr: self.rewrite_expr(expr),
                 cases: cases
@@ -1295,6 +1312,10 @@ fn subst_stmt(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
             span: *span,
         },
         Stmt::Unsafe(b, s) => Stmt::Unsafe(subst_block(b, map), *s),
+        Stmt::Asm { template, span } => Stmt::Asm {
+            template: template.clone(),
+            span: *span,
+        },
         Stmt::Break(s) => Stmt::Break(*s),
         Stmt::Continue(s) => Stmt::Continue(*s),
         Stmt::Switch { expr, cases, span } => Stmt::Switch {
@@ -1441,6 +1462,12 @@ fn subst_expr(expr: &Expr, map: &HashMap<String, TypeRef>) -> Expr {
             span: *span,
         },
         Expr::TypeOf(ty, span) => Expr::TypeOf(subst_type(ty, map), *span),
+        Expr::SizeOf(ty, span) => Expr::SizeOf(subst_type(ty, map), *span),
+        Expr::OffsetOf { ty, field, span } => Expr::OffsetOf {
+            ty: subst_type(ty, map),
+            field: field.clone(),
+            span: *span,
+        },
         Expr::Is { expr, ty, span } => Expr::Is {
             expr: Box::new(subst_expr(expr, map)),
             ty: subst_type(ty, map),
@@ -1491,6 +1518,7 @@ mod tests {
             nullable: false,
             is_array: false,
             array_dims: 0,
+            volatile: false,
             span: Span::default(),
         };
         assert_eq!(mangle_type(&t), "List__int");

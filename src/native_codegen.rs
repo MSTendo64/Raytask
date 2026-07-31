@@ -2,13 +2,11 @@
 
 use crate::bytecode::{Module, Op};
 use crate::bytecode_format::serialize_module;
+use crate::native_triple::{Arch as TripleArch, NativeTriple, OsKind};
 use crate::value::Value;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arch {
-    X86_64,
-}
+pub use crate::native_triple::Arch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkTarget {
@@ -19,6 +17,8 @@ pub enum LinkTarget {
     UefiX64,
     /// Flat raw binary
     RawX64,
+    /// Generic native triple (multi-arch built-in / clang path).
+    Triple(NativeTriple),
 }
 
 impl LinkTarget {
@@ -30,32 +30,53 @@ impl LinkTarget {
             "uefi" | "efi" | "uefi-x64" => Some(Self::UefiX64),
             "raw" | "bin" | "flat" => Some(Self::RawX64),
             "current" | "host" => Some(Self::host()),
-            _ => None,
+            other => NativeTriple::parse(other).map(Self::Triple),
+        }
+    }
+
+    pub fn from_triple(t: NativeTriple) -> Self {
+        match (t.os, t.arch) {
+            (OsKind::Windows, TripleArch::X86_64) => Self::WindowsX64,
+            (OsKind::Linux, TripleArch::X86_64) => Self::LinuxX64,
+            (OsKind::Macos, TripleArch::X86_64) => Self::MacosX64,
+            (OsKind::Uefi, TripleArch::X86_64) => Self::UefiX64,
+            (OsKind::Freestanding, TripleArch::X86_64) => Self::RawX64,
+            _ => Self::Triple(t),
+        }
+    }
+
+    pub fn triple(self) -> NativeTriple {
+        match self {
+            Self::WindowsX64 => NativeTriple::new(OsKind::Windows, TripleArch::X86_64),
+            Self::LinuxX64 => NativeTriple::new(OsKind::Linux, TripleArch::X86_64),
+            Self::MacosX64 => NativeTriple::new(OsKind::Macos, TripleArch::X86_64),
+            Self::UefiX64 => NativeTriple::new(OsKind::Uefi, TripleArch::X86_64),
+            Self::RawX64 => NativeTriple::new(OsKind::Freestanding, TripleArch::X86_64),
+            Self::Triple(t) => t,
         }
     }
 
     pub fn host() -> Self {
-        if cfg!(windows) {
-            Self::WindowsX64
-        } else if cfg!(target_os = "macos") {
-            Self::MacosX64
-        } else {
-            Self::LinuxX64
-        }
+        Self::from_triple(NativeTriple::host())
     }
 
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            Self::WindowsX64 => "windows-x64",
-            Self::LinuxX64 => "linux-x64",
-            Self::MacosX64 => "macos-x64",
-            Self::UefiX64 => "uefi-x64",
-            Self::RawX64 => "raw-x64",
+            Self::WindowsX64 => "windows-x64".into(),
+            Self::LinuxX64 => "linux-x64".into(),
+            Self::MacosX64 => "macos-x64".into(),
+            Self::UefiX64 => "uefi-x64".into(),
+            Self::RawX64 => "raw-x64".into(),
+            Self::Triple(t) => t.name(),
         }
     }
 
     pub fn is_freestanding(self) -> bool {
         matches!(self, Self::UefiX64 | Self::RawX64)
+            || matches!(
+                self.triple().os,
+                OsKind::Uefi | OsKind::Freestanding
+            )
     }
 
     pub fn default_ext(self) -> &'static str {
@@ -65,6 +86,7 @@ impl LinkTarget {
             Self::MacosX64 => "macho",
             Self::UefiX64 => "efi",
             Self::RawX64 => "bin",
+            Self::Triple(t) => t.default_ext(),
         }
     }
 }
@@ -168,7 +190,7 @@ impl Default for CodegenNativeOptions {
 pub fn codegen(module: &Module, opts: &CodegenNativeOptions) -> ObjectFile {
     let rtbc = serialize_module(module);
     let mut obj = ObjectFile {
-        arch: Arch::X86_64,
+        arch: opts.target.triple().arch,
         target: opts.target,
         sections: Vec::new(),
         symbols: Vec::new(),
@@ -236,30 +258,55 @@ pub fn codegen(module: &Module, opts: &CodegenNativeOptions) -> ObjectFile {
             );
             maybe_write_c(&opts.out_dir, &opts.name, "uefi", &c);
         }
-        LinkTarget::WindowsX64 | LinkTarget::LinuxX64 | LinkTarget::MacosX64 => {
-            let c = generate_host_c(&rtbc, &opts.name);
-            obj.c_source = Some(c.clone());
-            // Host .text placeholder (real binary uses runtime stub packaging)
-            let text_idx = obj.sections.len();
-            obj.sections.push(Section {
-                name: ".text".into(),
-                kind: SectionKind::Text,
-                data: host_stub_text(),
-                align: 16,
-                vma: 0x1000,
-            });
-            obj.symbols.push(Symbol {
-                name: "main".into(),
-                section: Some(text_idx),
-                offset: 0,
-                size: 1,
-                kind: SymbolKind::Func,
-                global: true,
-            });
-            obj.notes.push(
-                "Host: ObjectFile embeds RTBC; Linker packages runtime stub + payload".into(),
-            );
-            maybe_write_c(&opts.out_dir, &opts.name, "host", &c);
+        LinkTarget::WindowsX64
+        | LinkTarget::LinuxX64
+        | LinkTarget::MacosX64
+        | LinkTarget::Triple(_) => {
+            if opts.target.is_freestanding() {
+                let c = generate_uefi_c_from_module(module, &rtbc, &opts.name);
+                obj.c_source = Some(c.clone());
+                let text = uefi_stub_text();
+                let text_idx = obj.sections.len();
+                obj.sections.push(Section {
+                    name: ".text".into(),
+                    kind: SectionKind::Text,
+                    data: text,
+                    align: 16,
+                    vma: opts.load_address,
+                });
+                obj.symbols.push(Symbol {
+                    name: "efi_main".into(),
+                    section: Some(text_idx),
+                    offset: 0,
+                    size: 6,
+                    kind: SymbolKind::Func,
+                    global: true,
+                });
+                maybe_write_c(&opts.out_dir, &opts.name, "uefi", &c);
+            } else {
+                let c = generate_host_c(&rtbc, &opts.name);
+                obj.c_source = Some(c.clone());
+                let text_idx = obj.sections.len();
+                obj.sections.push(Section {
+                    name: ".text".into(),
+                    kind: SectionKind::Text,
+                    data: host_stub_text(),
+                    align: 16,
+                    vma: 0x1000,
+                });
+                obj.symbols.push(Symbol {
+                    name: "main".into(),
+                    section: Some(text_idx),
+                    offset: 0,
+                    size: 1,
+                    kind: SymbolKind::Func,
+                    global: true,
+                });
+                obj.notes.push(
+                    "Host: ObjectFile embeds RTBC; Linker packages runtime stub + payload".into(),
+                );
+                maybe_write_c(&opts.out_dir, &opts.name, "host", &c);
+            }
         }
     }
 
