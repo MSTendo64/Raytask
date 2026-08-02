@@ -430,6 +430,13 @@ fn disassemble_chunk(out: &mut String, chunk: &crate::bytecode::Chunk) {
                 writeln!(out, "        {:04} L{:04}  {:<14} {}", ip, line, op.name(), arg).ok();
                 ip += 2;
             }
+            Op::Constant16 | Op::GetGlobal16 | Op::SetGlobal16 | Op::DefineGlobal16 => {
+                let hi = chunk.code.get(ip + 1).copied().unwrap_or(0) as u16;
+                let lo = chunk.code.get(ip + 2).copied().unwrap_or(0) as u16;
+                let arg = (hi << 8) | lo;
+                writeln!(out, "        {:04} L{:04}  {:<14} {}", ip, line, op.name(), arg).ok();
+                ip += 3;
+            }
             Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue | Op::Loop | Op::TryBegin => {
                 let hi = chunk.code.get(ip + 1).copied().unwrap_or(0) as u16;
                 let lo = chunk.code.get(ip + 2).copied().unwrap_or(0) as u16;

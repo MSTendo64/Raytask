@@ -313,6 +313,65 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
     );
     types.insert("Env".into(), env);
 
+    let mut typ = empty_class("Type");
+    typ.properties.insert("Name".into(), Ty::String);
+    typ.properties.insert("Kind".into(), Ty::String);
+    typ.properties.insert(
+        "Fields".into(),
+        Ty::Array {
+            elem: Box::new(Ty::String),
+            dims: 1,
+        },
+    );
+    typ.properties.insert(
+        "Methods".into(),
+        Ty::Array {
+            elem: Box::new(Ty::String),
+            dims: 1,
+        },
+    );
+    typ.methods.insert(
+        "Of".into(),
+        method("Of", vec![("value", Ty::Dyn)], Ty::Named("Type".into()), true),
+    );
+    typ.methods.insert(
+        "GetField".into(),
+        method(
+            "GetField",
+            vec![("obj", Ty::Dyn), ("name", Ty::String)],
+            Ty::Dyn,
+            true,
+        ),
+    );
+    typ.methods.insert(
+        "SetField".into(),
+        method(
+            "SetField",
+            vec![("obj", Ty::Dyn), ("name", Ty::String), ("value", Ty::Dyn)],
+            Ty::Void,
+            true,
+        ),
+    );
+    typ.methods.insert(
+        "Invoke".into(),
+        method(
+            "Invoke",
+            vec![("obj", Ty::Dyn), ("name", Ty::String)],
+            Ty::Dyn,
+            true,
+        ),
+    );
+    typ.methods.insert(
+        "IsInstance".into(),
+        method(
+            "IsInstance",
+            vec![("obj", Ty::Dyn), ("type", Ty::Dyn)],
+            Ty::Bool,
+            true,
+        ),
+    );
+    types.insert("Type".into(), typ);
+
     let mut random = empty_class("Random");
     random.methods.insert("Next".into(), method("Next", vec![], Ty::Int, true));
     random

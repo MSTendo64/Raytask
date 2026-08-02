@@ -371,3 +371,12 @@ pub const ENV_ARGS: usize = 1203;
 pub const ENV_CURRENT_DIR: usize = 1204;
 pub const ENV_OS: usize = 1205;
 pub const ENV_HOME: usize = 1206;
+
+// ---- Reflection / Type ----
+pub const TYPE_OF: usize = 1300;
+pub const TYPE_GET_FIELD: usize = 1301;
+pub const TYPE_SET_FIELD: usize = 1302;
+pub const TYPE_INVOKE: usize = 1303;
+pub const TYPE_IS_INSTANCE: usize = 1304;
+pub const TYPE_FIELDS: usize = 1305;
+pub const TYPE_METHODS: usize = 1306;

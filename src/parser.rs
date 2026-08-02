@@ -1162,30 +1162,7 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::Unsafe(body, start.merge(self.previous().span)))
             }
-            TokenKind::Asm => {
-                let start = self.current().span;
-                self.advance();
-                self.expect(TokenKind::LParen, "expected '(' after asm")?;
-                let template = match &self.current().kind {
-                    TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
-                        let s = s.clone();
-                        self.advance();
-                        s
-                    }
-                    _ => {
-                        return Err(CompileError::syntax(
-                            "expected string literal in asm(...)",
-                            self.current().span,
-                        ));
-                    }
-                };
-                self.expect(TokenKind::RParen, "expected ')'")?;
-                self.expect(TokenKind::Semicolon, "expected ';' after asm")?;
-                Ok(Stmt::Asm {
-                    template,
-                    span: start.merge(self.previous().span),
-                })
-            }
+            TokenKind::Asm => self.parse_asm_stmt(),
             TokenKind::Const => Ok(Stmt::Const(self.parse_const_decl()?)),
             TokenKind::Var
             | TokenKind::Dyn
@@ -2104,18 +2081,25 @@ impl Parser {
                     expr: Box::new(expr),
                     span,
                 };
-            } else if self.match_kind(&[TokenKind::Question])
+            } else if self.check(&TokenKind::Question)
                 && !matches!(
-                    self.current().kind,
-                    TokenKind::Ident(_)
-                        | TokenKind::IntLit(_)
-                        | TokenKind::StringLit(_)
-                        | TokenKind::LParen
-                        | TokenKind::BoolLit(_)
+                    self.peek_kind(1),
+                    Some(TokenKind::Ident(_))
+                        | Some(TokenKind::IntLit(_))
+                        | Some(TokenKind::StringLit(_))
+                        | Some(TokenKind::LParen)
+                        | Some(TokenKind::BoolLit(_))
+                        | Some(TokenKind::FloatLit(_))
+                        | Some(TokenKind::CharLit(_))
+                        | Some(TokenKind::Minus)
+                        | Some(TokenKind::Bang)
+                        | Some(TokenKind::Tilde)
                 )
             {
-                // try operator `expr?` when not ternary (ternary already handled higher)
-                // At postfix, `?` alone at end of stmt-ish — treat as Try
+                // Postfix try `expr?` only when `?` is NOT starting a ternary.
+                // Important: do not consume `?` when the next token looks like a ternary arm
+                // (otherwise `cond ? 1 : 0` loses the `?` and fails to parse).
+                self.advance();
                 let span = expr.span().merge(self.previous().span);
                 expr = Expr::Try(Box::new(expr), span);
             } else {
@@ -2274,6 +2258,13 @@ impl Parser {
                 let ty = self.parse_type_ref()?;
                 self.expect(TokenKind::RParen, "expected ')'")?;
                 Ok(Expr::TypeOf(ty, span.merge(self.previous().span)))
+            }
+            TokenKind::Nameof => {
+                self.advance();
+                self.expect(TokenKind::LParen, "expected '('")?;
+                let target = self.parse_nameof_target()?;
+                self.expect(TokenKind::RParen, "expected ')'")?;
+                Ok(Expr::NameOf(target, span.merge(self.previous().span)))
             }
             TokenKind::Sizeof => {
                 self.advance();
@@ -2468,6 +2459,218 @@ impl Parser {
         Ok(params)
     }
 
+    fn parse_asm_stmt(&mut self) -> CompileResult<Stmt> {
+        let start = self.current().span;
+        self.expect(TokenKind::Asm, "expected 'asm'")?;
+        // Optional `volatile` (C: `asm volatile (...)`); we always emit volatile.
+        let _explicit_volatile = self.match_kind(&[TokenKind::Volatile]);
+        self.expect(TokenKind::LParen, "expected '(' after asm")?;
+
+        let mut template = self.parse_asm_template()?;
+        let mut outputs = Vec::new();
+        let mut inputs = Vec::new();
+        let mut clobbers = Vec::new();
+
+        if self.match_kind(&[TokenKind::Colon]) {
+            // GCC-style: asm("..." : outs : ins : clobbers)
+            if !self.check(&TokenKind::Colon) && !self.check(&TokenKind::RParen) {
+                outputs = self.parse_asm_operand_list()?;
+            }
+            if self.match_kind(&[TokenKind::Colon]) {
+                if !self.check(&TokenKind::Colon) && !self.check(&TokenKind::RParen) {
+                    inputs = self.parse_asm_operand_list()?;
+                }
+                if self.match_kind(&[TokenKind::Colon]) {
+                    if !self.check(&TokenKind::RParen) {
+                        clobbers = self.parse_asm_clobber_list()?;
+                    }
+                }
+            }
+        } else {
+            // Sugar: asm("...", out x, in y) or asm("...", "=r"(x), "r"(y))
+            while self.match_kind(&[TokenKind::Comma]) {
+                let (op, is_out) = self.parse_asm_sugar_operand()?;
+                if is_out {
+                    outputs.push(op);
+                } else {
+                    inputs.push(op);
+                }
+            }
+            // Convert `{N}` placeholders to GCC `%N`
+            if template.contains('{') {
+                template = rewrite_asm_braces(&template);
+            }
+        }
+
+        self.expect(TokenKind::RParen, "expected ')' after asm")?;
+        self.expect(TokenKind::Semicolon, "expected ';' after asm")?;
+        Ok(Stmt::Asm {
+            template,
+            outputs,
+            inputs,
+            clobbers,
+            is_volatile: true,
+            span: start.merge(self.previous().span),
+        })
+    }
+
+    fn parse_asm_template(&mut self) -> CompileResult<String> {
+        let mut parts = Vec::new();
+        loop {
+            match &self.current().kind {
+                TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
+                    parts.push(s.clone());
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+        if parts.is_empty() {
+            return Err(CompileError::syntax(
+                "expected string literal in asm(...)",
+                self.current().span,
+            ));
+        }
+        Ok(parts.join(""))
+    }
+
+    fn parse_asm_operand_list(&mut self) -> CompileResult<Vec<AsmOperand>> {
+        let mut ops = Vec::new();
+        loop {
+            ops.push(self.parse_asm_c_operand()?);
+            if !self.match_kind(&[TokenKind::Comma]) {
+                break;
+            }
+            // Trailing comma before `:)` / `)` is not allowed in C; stop if next is colon/rparen
+            if self.check(&TokenKind::Colon) || self.check(&TokenKind::RParen) {
+                break;
+            }
+        }
+        Ok(ops)
+    }
+
+    /// C-style `"=r"(expr)`.
+    fn parse_asm_c_operand(&mut self) -> CompileResult<AsmOperand> {
+        let constraint = match &self.current().kind {
+            TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
+                let s = s.clone();
+                self.advance();
+                s
+            }
+            _ => {
+                return Err(CompileError::syntax(
+                    "expected constraint string in asm operand (e.g. \"=r\"(x))",
+                    self.current().span,
+                ));
+            }
+        };
+        self.expect(TokenKind::LParen, "expected '(' after asm constraint")?;
+        let expr = self.parse_expression()?;
+        self.expect(TokenKind::RParen, "expected ')' after asm operand")?;
+        Ok(AsmOperand { constraint, expr })
+    }
+
+    /// Sugar `out x` / `in y` / `out "=r" x` / `"=r"(x)`.
+    /// Note: `in` is a language keyword (`TokenKind::In`), not an ident.
+    fn parse_asm_sugar_operand(&mut self) -> CompileResult<(AsmOperand, bool)> {
+        // Direct C operand after comma
+        if matches!(
+            self.current().kind,
+            TokenKind::StringLit(_) | TokenKind::RawStringLit(_)
+        ) {
+            let op = self.parse_asm_c_operand()?;
+            let is_out = op.constraint.starts_with('=') || op.constraint.starts_with('+');
+            return Ok((op, is_out));
+        }
+        let is_out = if self.match_kind(&[TokenKind::In]) {
+            false
+        } else {
+            let (kw, _) = self.expect_ident()?;
+            match kw.as_str() {
+                "out" | "output" => true,
+                "input" => false,
+                other => {
+                    return Err(CompileError::syntax(
+                        format!("expected 'out' or 'in' in asm sugar, found '{other}'"),
+                        self.previous().span,
+                    ));
+                }
+            }
+        };
+        let constraint = if matches!(
+            self.current().kind,
+            TokenKind::StringLit(_) | TokenKind::RawStringLit(_)
+        ) {
+            match &self.current().kind {
+                TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
+                    let s = s.clone();
+                    self.advance();
+                    s
+                }
+                _ => unreachable!(),
+            }
+        } else if is_out {
+            "=r".into()
+        } else {
+            "r".into()
+        };
+        let expr = self.parse_expression()?;
+        Ok((AsmOperand { constraint, expr }, is_out))
+    }
+
+    fn parse_asm_clobber_list(&mut self) -> CompileResult<Vec<String>> {
+        let mut out = Vec::new();
+        loop {
+            match &self.current().kind {
+                TokenKind::StringLit(s) | TokenKind::RawStringLit(s) => {
+                    out.push(s.clone());
+                    self.advance();
+                }
+                _ => {
+                    return Err(CompileError::syntax(
+                        "expected clobber string (e.g. \"memory\")",
+                        self.current().span,
+                    ));
+                }
+            }
+            if !self.match_kind(&[TokenKind::Comma]) {
+                break;
+            }
+            if self.check(&TokenKind::RParen) {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    fn parse_nameof_target(&mut self) -> CompileResult<NameOfExpr> {
+        let first = if self.match_kind(&[TokenKind::This]) {
+            "this".to_string()
+        } else {
+            self.expect_ident()?.0
+        };
+        if !self.check(&TokenKind::Dot) {
+            return Ok(NameOfExpr::Ident(first));
+        }
+        let mut object = Expr::Ident(first, self.previous().span);
+        let mut field = String::new();
+        while self.match_kind(&[TokenKind::Dot]) {
+            let (name, fspan) = self.expect_ident()?;
+            field = name.clone();
+            let span = object.span().merge(fspan);
+            object = Expr::Member {
+                object: Box::new(object),
+                field: name,
+                null_safe: false,
+                span,
+            };
+        }
+        Ok(NameOfExpr::Member {
+            object: Box::new(object),
+            field,
+        })
+    }
+
     fn parse_new(&mut self) -> CompileResult<Expr> {
         let start = self.current().span;
         self.expect(TokenKind::New, "expected 'new'")?;
@@ -2615,4 +2818,30 @@ fn apply_layout_attributes(item: Item, attrs: &[Attribute]) -> Item {
         }
         other => other,
     }
+}
+
+/// Rewrite RayTask `{0}` / `{1}` asm placeholders to GCC `%0` / `%1`.
+fn rewrite_asm_braces(template: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start && j < bytes.len() && bytes[j] == b'}' {
+                out.push('%');
+                out.push_str(&template[start..j]);
+                i = j + 1;
+                continue;
+            }
+        }
+        // Escape lone `%` for GCC? leave as-is so C `%eax` / `%0` still work.
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }

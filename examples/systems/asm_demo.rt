@@ -1,0 +1,25 @@
+/// Inline assembly (C-style) — requires `unsafe`.
+/// Build with: `raytask build examples/systems/asm_demo.rt --target embedded --no-gc`
+/// or inspect C via transpile.
+
+void Main() {
+    int a = 40;
+    int b = 2;
+    int sum = 0;
+
+    unsafe {
+        // Basic template (always emitted as __asm__ volatile)
+        asm("nop");
+
+        // Optional `volatile` keyword (C spelling)
+        asm volatile ("nop");
+
+        // GCC extended asm: outputs : inputs : clobbers
+        asm("addl %1, %0" : "=r"(sum) : "r"(a), "0"(b));
+
+        // RayTask sugar: `{N}` → `%N`, default `=r` / `r` constraints
+        asm("addl {1}, {0}", out sum, in a);
+    }
+
+    print(sum);
+}

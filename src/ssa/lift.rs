@@ -189,6 +189,9 @@ fn find_leaders(chunk: &Chunk) -> HashSet<usize> {
             | Op::DecLocal => {
                 ip += 1;
             }
+            Op::Constant16 | Op::GetGlobal16 | Op::SetGlobal16 | Op::DefineGlobal16 => {
+                ip += 2;
+            }
             Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue | Op::Loop | Op::TryBegin => {
                 if ip + 1 < chunk.code.len() {
                     let off = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]) as usize;
@@ -270,6 +273,15 @@ fn translate_range(
             Op::Constant => {
                 let idx = chunk.code[ip] as usize;
                 ip += 1;
+                let c = chunk.constants.get(idx).cloned().unwrap_or(Value::Null);
+                let vid = func.alloc_value();
+                let cv = value_to_const(&c);
+                func.push_inst(bb, mk(vid, InstKind::Const(cv), SsaTy::Dyn, false));
+                stack.push(vid);
+            }
+            Op::Constant16 => {
+                let idx = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]) as usize;
+                ip += 2;
                 let c = chunk.constants.get(idx).cloned().unwrap_or(Value::Null);
                 let vid = func.alloc_value();
                 let cv = value_to_const(&c);
@@ -381,6 +393,13 @@ fn translate_range(
                 func.push_inst(bb, mk(vid, InstKind::GetGlobal { index: idx }, SsaTy::Dyn, false));
                 stack.push(vid);
             }
+            Op::GetGlobal16 => {
+                let idx = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]) as u32;
+                ip += 2;
+                let vid = func.alloc_value();
+                func.push_inst(bb, mk(vid, InstKind::GetGlobal { index: idx }, SsaTy::Dyn, false));
+                stack.push(vid);
+            }
             Op::SetGlobal => {
                 let idx = chunk.code[ip] as u32;
                 ip += 1;
@@ -396,9 +415,39 @@ fn translate_range(
                     ),
                 );
             }
+            Op::SetGlobal16 => {
+                let idx = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]) as u32;
+                ip += 2;
+                let val = stack.last().copied().unwrap_or_else(|| null_const(func, bb, line));
+                let _nid = func.alloc_value();
+                let _ = func.push_inst(
+                    bb,
+                    mk(
+                        _nid,
+                        InstKind::SetGlobal { index: idx, value: val },
+                        SsaTy::Void,
+                        true,
+                    ),
+                );
+            }
             Op::DefineGlobal => {
                 let idx = chunk.code[ip] as u32;
                 ip += 1;
+                let val = stack.pop().unwrap_or_else(|| null_const(func, bb, line));
+                let _nid = func.alloc_value();
+                let _ = func.push_inst(
+                    bb,
+                    mk(
+                        _nid,
+                        InstKind::DefineGlobal { index: idx, value: val },
+                        SsaTy::Void,
+                        true,
+                    ),
+                );
+            }
+            Op::DefineGlobal16 => {
+                let idx = u16::from_be_bytes([chunk.code[ip], chunk.code[ip + 1]]) as u32;
+                ip += 2;
                 let val = stack.pop().unwrap_or_else(|| null_const(func, bb, line));
                 let _nid = func.alloc_value();
                 let _ = func.push_inst(
@@ -731,6 +780,37 @@ fn translate_range(
                 ip += 2;
             }
             Op::TryEnd => {}
+            Op::IsInstance => {
+                let _ty = stack.pop();
+                let arg = stack.pop().unwrap_or_else(|| null_const(func, bb, line));
+                let null_v = func.alloc_value();
+                func.push_inst(
+                    bb,
+                    mk(
+                        null_v,
+                        InstKind::UnOp {
+                            op: UnOpKind::IsNull,
+                            arg,
+                        },
+                        SsaTy::Bool,
+                        false,
+                    ),
+                );
+                let vid = func.alloc_value();
+                func.push_inst(
+                    bb,
+                    mk(
+                        vid,
+                        InstKind::UnOp {
+                            op: UnOpKind::Not,
+                            arg: null_v,
+                        },
+                        SsaTy::Bool,
+                        false,
+                    ),
+                );
+                stack.push(vid);
+            }
         }
     }
     let _ = (is_entry, stack);

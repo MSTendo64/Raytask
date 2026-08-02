@@ -10,10 +10,25 @@ Write firmware, drivers, kernels, and FFI-heavy code with:
 - `union` types (native/C overlapping storage)
 - `volatile` types for MMIO
 - `sizeof(T)` / `offsetof(T, field)`
-- `unsafe { asm("..."); }` escapes (C backend)
+- `unsafe { asm(...); }` escapes with GCC-style operands / clobbers (C backend)
 - freestanding bump-heap (`--target embedded|kernel --no-gc`)
 
 Hosted VM still runs the same sources with best-effort semantics (sizeof for primitives, asm no-op, unions as independent fields).
+
+### Inline assembly
+
+```raytask
+unsafe {
+    asm("nop");
+    asm volatile ("nop");
+    // outputs : inputs : clobbers  (same idea as GCC extended asm)
+    asm("addl %1, %0" : "=r"(sum) : "r"(a), "0"(b) : "cc");
+    // RayTask sugar: {N} → %N
+    asm("addl {1}, {0}", out sum, in a);
+}
+```
+
+See `examples/systems/asm_demo.rt`.
 
 ## Targets
 
@@ -57,6 +72,6 @@ C codegen emits by-value types in `extern` signatures (not `T*`). Hosted VM pack
 
 1. Full C header field layouts / nested typedef structs from `.h`
 2. Richer SSA→C (objects, floats, async) on the Host AOT path
-3. Inline asm operands (not only template strings)
+3. Preserve `asm` through SSA→C function bodies (today AST→C / non-SSA bodies)
 4. Direct SSA → machine code (optional; Host AOT already uses C toolchain)
 5. More MCU kits (RP2040, nRF52, …)

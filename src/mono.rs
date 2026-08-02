@@ -895,8 +895,31 @@ impl Mono {
                 }
             }
             Stmt::Unsafe(b, s) => Stmt::Unsafe(self.rewrite_block(b), s),
-            Stmt::Asm { template, span } => Stmt::Asm {
+            Stmt::Asm {
                 template,
+                outputs,
+                inputs,
+                clobbers,
+                is_volatile,
+                span,
+            } => Stmt::Asm {
+                template,
+                outputs: outputs
+                    .into_iter()
+                    .map(|o| crate::ast::AsmOperand {
+                        constraint: o.constraint,
+                        expr: self.rewrite_expr(o.expr),
+                    })
+                    .collect(),
+                inputs: inputs
+                    .into_iter()
+                    .map(|o| crate::ast::AsmOperand {
+                        constraint: o.constraint,
+                        expr: self.rewrite_expr(o.expr),
+                    })
+                    .collect(),
+                clobbers,
+                is_volatile,
                 span,
             },
             Stmt::Switch { expr, cases, span } => Stmt::Switch {
@@ -1312,8 +1335,31 @@ fn subst_stmt(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
             span: *span,
         },
         Stmt::Unsafe(b, s) => Stmt::Unsafe(subst_block(b, map), *s),
-        Stmt::Asm { template, span } => Stmt::Asm {
+        Stmt::Asm {
+            template,
+            outputs,
+            inputs,
+            clobbers,
+            is_volatile,
+            span,
+        } => Stmt::Asm {
             template: template.clone(),
+            outputs: outputs
+                .iter()
+                .map(|o| crate::ast::AsmOperand {
+                    constraint: o.constraint.clone(),
+                    expr: subst_expr(&o.expr, map),
+                })
+                .collect(),
+            inputs: inputs
+                .iter()
+                .map(|o| crate::ast::AsmOperand {
+                    constraint: o.constraint.clone(),
+                    expr: subst_expr(&o.expr, map),
+                })
+                .collect(),
+            clobbers: clobbers.clone(),
+            is_volatile: *is_volatile,
             span: *span,
         },
         Stmt::Break(s) => Stmt::Break(*s),

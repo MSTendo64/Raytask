@@ -47,7 +47,7 @@ fn field_type_size_align(
         FfiType::I16 | FfiType::U16 => (2, 2),
         FfiType::I32 | FfiType::U32 | FfiType::F32 => (4, 4),
         FfiType::I64 | FfiType::U64 | FfiType::F64 | FfiType::Ptr | FfiType::CString => (8, 8),
-        FfiType::Struct(s) => (s.size, s.align),
+        FfiType::Struct(s) | FfiType::StructPtr(s) => (s.size, s.align),
     };
     Some((sz, al, ffi))
 }

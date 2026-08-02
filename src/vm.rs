@@ -697,6 +697,12 @@ impl Vm {
                 let v = self.module.chunks[chunk].constants[idx].clone();
                 self.push(v);
             }
+            x if x == Op::Constant16 as u8 => {
+                let idx = self.read_u16() as usize;
+                let chunk = self.frame().chunk;
+                let v = self.module.chunks[chunk].constants[idx].clone();
+                self.push(v);
+            }
             x if x == Op::Null as u8 => self.push(Value::Null),
             x if x == Op::True as u8 => self.push(Value::Bool(true)),
             x if x == Op::False as u8 => self.push(Value::Bool(false)),
@@ -755,6 +761,25 @@ impl Vm {
                 }
                 self.push(v);
             }
+            x if x == Op::GetGlobal16 as u8 => {
+                let idx = self.read_u16() as usize;
+                let v = self.globals.get(idx).cloned().unwrap_or(Value::Null);
+                if matches!(v, Value::Null) {
+                    if let Some(name) = self.module.globals.get(idx) {
+                        if self.module.stdlib_enabled {
+                            if let Some(b) = stdlib::builtin_global(name) {
+                                if idx >= self.globals.len() {
+                                    self.globals.resize(idx + 1, Value::Null);
+                                }
+                                self.globals[idx] = b.clone();
+                                self.push(b);
+                                return Ok(StepCtrl::Continue);
+                            }
+                        }
+                    }
+                }
+                self.push(v);
+            }
             x if x == Op::SetGlobal as u8 => {
                 let idx = self.read_byte() as usize;
                 let v = self.peek(0)?.clone();
@@ -763,8 +788,24 @@ impl Vm {
                 }
                 self.globals[idx] = v;
             }
+            x if x == Op::SetGlobal16 as u8 => {
+                let idx = self.read_u16() as usize;
+                let v = self.peek(0)?.clone();
+                if idx >= self.globals.len() {
+                    self.globals.resize(idx + 1, Value::Null);
+                }
+                self.globals[idx] = v;
+            }
             x if x == Op::DefineGlobal as u8 => {
                 let idx = self.read_byte() as usize;
+                let v = self.pop()?;
+                if idx >= self.globals.len() {
+                    self.globals.resize(idx + 1, Value::Null);
+                }
+                self.globals[idx] = v;
+            }
+            x if x == Op::DefineGlobal16 as u8 => {
+                let idx = self.read_u16() as usize;
                 let v = self.pop()?;
                 if idx >= self.globals.len() {
                     self.globals.resize(idx + 1, Value::Null);
@@ -1162,11 +1203,77 @@ impl Vm {
                     })?;
                 *cell.borrow_mut() = v;
             }
+            x if x == Op::IsInstance as u8 => {
+                let ty_val = self.pop()?;
+                let value = self.pop()?;
+                let ok = match ty_val {
+                    Value::Type(t) => self.value_is_instance(&value, &t),
+                    Value::String(s) => self.value_is_instance(
+                        &value,
+                        &crate::value::TypeHandle {
+                            name: s.to_string(),
+                            kind: "type".into(),
+                            class_index: self
+                                .module
+                                .classes
+                                .iter()
+                                .position(|c| c.name == s.as_ref()),
+                            fields: Vec::new(),
+                            field_types: Vec::new(),
+                            methods: Vec::new(),
+                        },
+                    ),
+                    _ => false,
+                };
+                self.push(Value::Bool(ok));
+            }
             other => {
                 return Err(RuntimeError::Message(format!("unknown opcode {}", other)));
             }
         }
         Ok(StepCtrl::Continue)
+    }
+
+    fn value_is_instance(&self, value: &Value, ty: &crate::value::TypeHandle) -> bool {
+        let name = ty.name.as_str();
+        match name {
+            "null" => return matches!(value, Value::Null),
+            "bool" => return matches!(value, Value::Bool(_)),
+            "int" | "long" | "short" | "sbyte" | "byte" => {
+                return matches!(value, Value::Int(_));
+            }
+            "uint" | "ulong" | "ushort" => return matches!(value, Value::UInt(_)),
+            "float" | "double" | "decimal" => return matches!(value, Value::Float(_)),
+            "char" => return matches!(value, Value::Char(_)),
+            "string" | "String" => return matches!(value, Value::String(_)),
+            "array" | "List" => return matches!(value, Value::Array(_)),
+            "dictionary" | "Dictionary" => return matches!(value, Value::Dict(_)),
+            "function" => {
+                return matches!(value, Value::Function(_) | Value::Native(_) | Value::Ffi(_));
+            }
+            "Type" => return matches!(value, Value::Type(_)),
+            "ptr" => return matches!(value, Value::Ptr(_)),
+            "object" | "dyn" => return !matches!(value, Value::Null),
+            _ => {}
+        }
+        match value {
+            Value::Object(o) => {
+                let o = o.borrow();
+                if let Some(want) = ty.class_index {
+                    let mut cur = o.class_index;
+                    while let Some(i) = cur {
+                        if i == want {
+                            return true;
+                        }
+                        cur = self.module.classes.get(i).and_then(|c| c.base);
+                    }
+                }
+                o.class_name == ty.name
+            }
+            Value::TypeModule(n) => n.as_ref() == ty.name,
+            Value::Type(t) => t.name == ty.name,
+            _ => value.type_name() == name,
+        }
     }
 
     fn binop(&mut self, op: &str) -> RuntimeResult<()> {
@@ -1327,6 +1434,7 @@ impl Vm {
                         | crate::stdlib::ids::THREAD_RUN
                         | crate::stdlib::ids::GC_COLLECT
                         | crate::stdlib::ids::GC_STATS
+                        | crate::stdlib::ids::TYPE_INVOKE
                 ) {
                     let result = self.call_native_with_vm(id, &args)?;
                     self.push(result);
@@ -1654,6 +1762,27 @@ impl Vm {
                 map.insert("bytes".into(), Value::Int(s.live_bytes as i64));
                 map.insert("enabled".into(), Value::Bool(s.enabled));
                 Ok(crate::gc::alloc_dict(map))
+            }
+            TYPE_INVOKE => {
+                let args = crate::stdlib::reflect::strip_type_receiver_pub(args);
+                let obj = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::Message("Type.Invoke(obj, name, …)".into()))?;
+                let name = args
+                    .get(1)
+                    .map(|v| v.as_string())
+                    .ok_or_else(|| {
+                        RuntimeError::Message("Type.Invoke requires a method name".into())
+                    })?;
+                let f = crate::stdlib::reflect::find_method(&obj, &name)?;
+                let mut call_args = vec![obj];
+                if let Some(Value::Array(a)) = args.get(2) {
+                    call_args.extend(a.borrow().iter().cloned());
+                } else {
+                    call_args.extend(args.iter().skip(2).cloned());
+                }
+                self.invoke_function(&f, &call_args)
             }
             _ => stdlib::call_native(id, args),
         }

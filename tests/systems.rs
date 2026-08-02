@@ -80,3 +80,64 @@ fn asm_in_unsafe_ok() {
     let report = check_source(src).unwrap();
     assert!(report.ok(), "{}", report.format_all());
 }
+
+#[test]
+fn asm_extended_gcc_emits_operands() {
+    use raytask::codegen_c::{CodegenOptions, RuntimeProfile};
+    use raytask::transpile_c_with;
+
+    let src = r#"
+        void Main() {
+            int a = 1;
+            int b = 2;
+            int sum = 0;
+            unsafe {
+                asm("addl %1, %0" : "=r"(sum) : "r"(a), "0"(b) : "cc");
+            }
+        }
+    "#;
+    let c = transpile_c_with(
+        src,
+        CodegenOptions {
+            profile: RuntimeProfile::Embedded,
+            gc: false,
+            freestanding: true,
+        },
+    )
+    .expect("transpile");
+    assert!(
+        c.contains("__asm__ volatile"),
+        "expected asm volatile, got:\n{c}"
+    );
+    assert!(c.contains("\"=r\"(sum)") || c.contains("\"=r\"(sum)"), "missing out operand:\n{c}");
+    assert!(c.contains("\"r\"(a)"), "missing in operand:\n{c}");
+    assert!(c.contains("\"cc\""), "missing clobber:\n{c}");
+}
+
+#[test]
+fn asm_sugar_rewrites_braces() {
+    use raytask::codegen_c::{CodegenOptions, RuntimeProfile};
+    use raytask::transpile_c_with;
+
+    let src = r#"
+        void Main() {
+            int x = 0;
+            int y = 1;
+            unsafe {
+                asm("movl {1}, {0}", out x, in y);
+            }
+        }
+    "#;
+    let c = transpile_c_with(
+        src,
+        CodegenOptions {
+            profile: RuntimeProfile::Host,
+            gc: true,
+            freestanding: false,
+        },
+    )
+    .expect("transpile");
+    assert!(c.contains("%0") && c.contains("%1"), "expected %N placeholders:\n{c}");
+    assert!(c.contains("\"=r\"(x)"), "expected out constraint:\n{c}");
+    assert!(c.contains("\"r\"(y)"), "expected in constraint:\n{c}");
+}

@@ -968,6 +968,14 @@ impl CCodegen {
         Ok(())
     }
 
+    fn format_asm_operands(&self, ops: &[crate::ast::AsmOperand]) -> String {
+        let mut parts = Vec::with_capacity(ops.len());
+        for op in ops {
+            parts.push(format!("\"{}\"({})", escape_c(&op.constraint), self.ex(&op.expr)));
+        }
+        parts.join(", ")
+    }
+
     fn emit_block_async(&mut self, block: &Block) -> CompileResult<()> {
         for stmt in &block.stmts {
             match stmt {
@@ -1168,8 +1176,31 @@ impl CCodegen {
                 self.writeln("/* unsafe */");
                 self.emit_block(b)?;
             }
-            Stmt::Asm { template, .. } => {
-                self.writeln(&format!("__asm__ volatile (\"{}\");", escape_c(template)));
+            Stmt::Asm { template, outputs, inputs, clobbers, .. } => {
+                // Build: __asm__ volatile ( "tpl" : outs : ins : clobbers );
+                let mut line = String::from("__asm__ volatile (");
+                line.push('"');
+                line.push_str(&escape_c(template));
+                line.push('"');
+
+                let has_ext =
+                    !outputs.is_empty() || !inputs.is_empty() || !clobbers.is_empty();
+                if has_ext {
+                    line.push_str(" : ");
+                    line.push_str(&self.format_asm_operands(outputs));
+                    line.push_str(" : ");
+                    line.push_str(&self.format_asm_operands(inputs));
+                    if !clobbers.is_empty() {
+                        line.push_str(" : ");
+                        let parts: Vec<String> = clobbers
+                            .iter()
+                            .map(|c| format!("\"{}\"", escape_c(c)))
+                            .collect();
+                        line.push_str(&parts.join(", "));
+                    }
+                }
+                line.push_str(");");
+                self.writeln(&line);
             }
             Stmt::Break(_) => self.writeln("break;"),
             Stmt::Continue(_) => self.writeln("continue;"),
@@ -1564,7 +1595,14 @@ fn expr_to_c(
             ..
         } => format!("({} ? {} : {})", ex(cond), ex(then_expr), ex(else_expr)),
         Expr::Await(e, _) => format!("await({})", ex(e)),
-        Expr::TypeOf(ty, _) => format!("/*typeof {}*/0", ty.name),
+        Expr::TypeOf(ty, _) => format!("/*typeof {}*/NULL", ty.name),
+        Expr::NameOf(target, _) => {
+            let name = match target {
+                crate::ast::NameOfExpr::Ident(n) => n.clone(),
+                crate::ast::NameOfExpr::Member { field, .. } => field.clone(),
+            };
+            format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+        }
         Expr::SizeOf(ty, _) => format!("(int64_t)sizeof({})", c_type_sizeof(ty, types)),
         Expr::OffsetOf { ty, field, .. } => {
             format!(

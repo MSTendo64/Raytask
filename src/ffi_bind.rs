@@ -1,4 +1,4 @@
-//! Expand `[DllImport:]` + `[bind:/include: ".h"]` into RayTask FFI function decls.
+//! Expand `[DllImport:]` + `[bind:/include: ".h"]` into RayTask FFI decls.
 //! Enables typechecking and VM calls without gcc.
 
 use crate::ast::*;
@@ -9,7 +9,7 @@ use crate::span::Span;
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Rewrite `program` in place: C header prototypes become bodyless function items.
+/// Rewrite `program` in place: C header prototypes/structs become RayTask items.
 pub fn expand_c_header_binds(program: &mut Program, entry: Option<&Path>) -> CompileResult<()> {
     let mut synthetic = Vec::new();
     let mut seen = HashSet::new();
@@ -43,6 +43,15 @@ fn collect_names_item(item: &Item, seen: &mut HashSet<String>) {
         }
         Item::Function(f) => {
             seen.insert(f.name.clone());
+        }
+        Item::Struct(s) => {
+            seen.insert(s.name.clone());
+        }
+        Item::Class(c) => {
+            seen.insert(c.name.clone());
+        }
+        Item::Union(u) => {
+            seen.insert(u.name.clone());
         }
         _ => {}
     }
@@ -99,6 +108,23 @@ fn push_header_decls(
         return Ok(());
     }
     let parsed = c_header::parse_header_file(&path)?;
+    for s in &parsed.structs {
+        if !seen.insert(s.name.clone()) {
+            continue;
+        }
+        out.push(Item::Struct(s.clone()));
+    }
+    for (name, value) in &parsed.constants {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        out.push(Item::Const(ConstDecl {
+            name: name.clone(),
+            ty: TypeRef::named("int", Span::default()),
+            value: Expr::Int(*value, Span::default()),
+            span: Span::default(),
+        }));
+    }
     for proto in &parsed.prototypes {
         if !seen.insert(proto.name.clone()) {
             continue;
@@ -157,7 +183,7 @@ fn ffi_to_type_ref(t: &FfiType) -> TypeRef {
         FfiType::I16 => "short",
         FfiType::I32 => "int",
         FfiType::I64 => "long",
-        FfiType::U8 => "ubyte",
+        FfiType::U8 => "byte",
         FfiType::U16 => "ushort",
         FfiType::U32 => "uint",
         FfiType::U64 => "ulong",
@@ -166,6 +192,11 @@ fn ffi_to_type_ref(t: &FfiType) -> TypeRef {
         FfiType::Ptr => "ptr",
         FfiType::CString => "string",
         FfiType::Struct(s) => return TypeRef::named(&s.name, Span::default()),
+        FfiType::StructPtr(s) => {
+            let mut tr = TypeRef::named("ptr", Span::default());
+            tr.args.push(TypeRef::named(&s.name, Span::default()));
+            return tr;
+        }
     };
     TypeRef::named(name, Span::default())
 }

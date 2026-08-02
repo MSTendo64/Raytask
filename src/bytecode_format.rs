@@ -1,12 +1,12 @@
 //! Binary bytecode format (.rtbc) — serialize/deserialize Module.
 
-use crate::bytecode::{Chunk, ClassInfo, Module};
+use crate::bytecode::{Chunk, ClassInfo, ClassKind, Module};
 use crate::error::{CompileError, CompileResult};
-use crate::value::{FunctionRef, Value};
+use crate::value::{FunctionRef, TypeHandle, Value};
 use std::rc::Rc;
 
 pub const RTBC_MAGIC: &[u8; 4] = b"RTBC";
-pub const RTBC_VERSION: u16 = 9;
+pub const RTBC_VERSION: u16 = 10;
 
 /// Trailer magic for standalone apps: [...bytecode...][u64 len][APP_MAGIC]
 pub const APP_MAGIC: &[u8; 8] = b"RTBCAP\x01\0";
@@ -26,9 +26,14 @@ pub fn serialize_module(module: &Module) -> Vec<u8> {
     w.var_u32(module.classes.len() as u32);
     for c in &module.classes {
         w.var_str(&c.name);
+        w.u8(c.kind as u8);
         w.var_u32(c.fields.len() as u32);
         for f in &c.fields {
             w.var_str(f);
+        }
+        w.var_u32(c.field_types.len() as u32);
+        for t in &c.field_types {
+            w.var_str(t);
         }
         w.var_u32(c.methods.len() as u32);
         for (name, idx) in &c.methods {
@@ -118,7 +123,7 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
         });
     }
     let version = r.u16()?;
-    if version != 8 && version != RTBC_VERSION {
+    if version != 8 && version != 9 && version != RTBC_VERSION {
         return Err(CompileError::Io {
             message: format!(
                 "unsupported .rtbc version {} (runtime expects {}); rebuild the app: raytask build … --target native-bin (updates raytask-stub)",
@@ -129,7 +134,203 @@ pub fn deserialize_module(data: &[u8]) -> CompileResult<Module> {
     if version == 8 {
         return deserialize_module_v8(&mut r);
     }
-    deserialize_module_v9(&mut r)
+    if version == 9 {
+        return deserialize_module_v9(&mut r);
+    }
+    deserialize_module_v10(&mut r)
+}
+
+fn read_class_info_legacy(r: &mut Reader<'_>) -> CompileResult<ClassInfo> {
+    let name = r.var_str()?;
+    let n_fields = r.var_u32()? as usize;
+    let mut fields = Vec::with_capacity(n_fields);
+    for _ in 0..n_fields {
+        fields.push(r.var_str()?);
+    }
+    let field_types = fields.iter().map(|_| "dyn".to_string()).collect();
+    let n_methods = r.var_u32()? as usize;
+    let mut methods = Vec::with_capacity(n_methods);
+    for _ in 0..n_methods {
+        let mname = r.var_str()?;
+        let idx = r.var_u32()? as usize;
+        methods.push((mname, idx));
+    }
+    let constructor = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    let base = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    let destructor = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    Ok(ClassInfo {
+        name,
+        kind: ClassKind::Class,
+        fields,
+        field_types,
+        methods,
+        constructor,
+        base,
+        destructor,
+    })
+}
+
+fn read_class_info_v10(r: &mut Reader<'_>) -> CompileResult<ClassInfo> {
+    let name = r.var_str()?;
+    let kind = ClassKind::from_u8(r.u8()?);
+    let n_fields = r.var_u32()? as usize;
+    let mut fields = Vec::with_capacity(n_fields);
+    for _ in 0..n_fields {
+        fields.push(r.var_str()?);
+    }
+    let n_ft = r.var_u32()? as usize;
+    let mut field_types = Vec::with_capacity(n_ft);
+    for _ in 0..n_ft {
+        field_types.push(r.var_str()?);
+    }
+    while field_types.len() < fields.len() {
+        field_types.push("dyn".into());
+    }
+    let n_methods = r.var_u32()? as usize;
+    let mut methods = Vec::with_capacity(n_methods);
+    for _ in 0..n_methods {
+        let mname = r.var_str()?;
+        let idx = r.var_u32()? as usize;
+        methods.push((mname, idx));
+    }
+    let constructor = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    let base = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    let destructor = if r.u8()? == 1 {
+        Some(r.var_u32()? as usize)
+    } else {
+        None
+    };
+    Ok(ClassInfo {
+        name,
+        kind,
+        fields,
+        field_types,
+        methods,
+        constructor,
+        base,
+        destructor,
+    })
+}
+
+fn deserialize_module_v10(r: &mut Reader<'_>) -> CompileResult<Module> {
+    let main_chunk = r.var_u32()? as usize;
+    let stdlib_enabled = r.u8()? != 0;
+
+    let n_globals = r.var_u32()? as usize;
+    let mut globals = Vec::with_capacity(n_globals);
+    for _ in 0..n_globals {
+        globals.push(r.var_str()?);
+    }
+
+    let n_classes = r.var_u32()? as usize;
+    let mut classes = Vec::with_capacity(n_classes);
+    for _ in 0..n_classes {
+        classes.push(read_class_info_v10(r)?);
+    }
+
+    let n_chunks = r.var_u32()? as usize;
+    let mut chunks = Vec::with_capacity(n_chunks);
+    for _ in 0..n_chunks {
+        let name = r.var_str()?;
+        let arity = r.var_u32()? as usize;
+        let local_count = r.var_u32()? as usize;
+        let is_async = r.u8()? != 0;
+        let code_len = r.var_u32()? as usize;
+        let code = r.bytes(code_len)?.to_vec();
+        let lines = read_lines(r)?;
+        let n_consts = r.var_u32()? as usize;
+        let mut constants = Vec::with_capacity(n_consts);
+        for _ in 0..n_consts {
+            constants.push(read_value_v10(r)?);
+        }
+        let n_ld = r.var_u32()? as usize;
+        let mut local_debug = Vec::with_capacity(n_ld);
+        for _ in 0..n_ld {
+            let ld_name = r.var_str()?;
+            let slot = r.u8()?;
+            let start_ip = r.var_u32()? as usize;
+            let end_raw = r.var_u32()?;
+            let end_ip = if end_raw == u32::MAX {
+                usize::MAX
+            } else {
+                end_raw as usize
+            };
+            local_debug.push(crate::bytecode::LocalDebug {
+                name: ld_name,
+                slot,
+                start_ip,
+                end_ip,
+            });
+        }
+        let source = if r.u8()? == 1 {
+            Some(r.var_str()?)
+        } else {
+            None
+        };
+        chunks.push(Chunk {
+            name,
+            code,
+            constants,
+            lines,
+            arity,
+            local_count,
+            is_async,
+            local_debug,
+            source,
+        });
+    }
+
+    // reuse FFI tail from v9
+    let n_includes = r.var_u32()? as usize;
+    let mut includes = Vec::with_capacity(n_includes);
+    for _ in 0..n_includes {
+        includes.push(r.var_str()?);
+    }
+    let n_links = r.var_u32()? as usize;
+    let mut links = Vec::with_capacity(n_links);
+    for _ in 0..n_links {
+        links.push(r.var_str()?);
+    }
+    let n_embeds = r.var_u32()? as usize;
+    let mut embeds = Vec::with_capacity(n_embeds);
+    for _ in 0..n_embeds {
+        let lib_name = r.var_str()?;
+        let source = r.var_str()?;
+        embeds.push(crate::ffi::FfiEmbed { lib_name, source });
+    }
+
+    Ok(Module {
+        chunks,
+        main_chunk,
+        globals,
+        classes,
+        ffi: crate::ffi::FfiModuleInfo {
+            includes,
+            links,
+            embeds,
+        },
+        stdlib_enabled,
+    })
 }
 
 fn deserialize_module_v9(r: &mut Reader<'_>) -> CompileResult<Module> {
@@ -145,42 +346,7 @@ fn deserialize_module_v9(r: &mut Reader<'_>) -> CompileResult<Module> {
     let n_classes = r.var_u32()? as usize;
     let mut classes = Vec::with_capacity(n_classes);
     for _ in 0..n_classes {
-        let name = r.var_str()?;
-        let n_fields = r.var_u32()? as usize;
-        let mut fields = Vec::with_capacity(n_fields);
-        for _ in 0..n_fields {
-            fields.push(r.var_str()?);
-        }
-        let n_methods = r.var_u32()? as usize;
-        let mut methods = Vec::with_capacity(n_methods);
-        for _ in 0..n_methods {
-            let mname = r.var_str()?;
-            let idx = r.var_u32()? as usize;
-            methods.push((mname, idx));
-        }
-        let constructor = if r.u8()? == 1 {
-            Some(r.var_u32()? as usize)
-        } else {
-            None
-        };
-        let base = if r.u8()? == 1 {
-            Some(r.var_u32()? as usize)
-        } else {
-            None
-        };
-        let destructor = if r.u8()? == 1 {
-            Some(r.var_u32()? as usize)
-        } else {
-            None
-        };
-        classes.push(ClassInfo {
-            name,
-            fields,
-            methods,
-            constructor,
-            base,
-            destructor,
-        });
+        classes.push(read_class_info_legacy(r)?);
     }
 
     let n_chunks = r.var_u32()? as usize;
@@ -304,7 +470,9 @@ fn deserialize_module_v8(r: &mut Reader<'_>) -> CompileResult<Module> {
         };
         classes.push(ClassInfo {
             name,
-            fields,
+            kind: ClassKind::Class,
+            fields: fields.clone(),
+            field_types: fields.iter().map(|_| "dyn".into()).collect(),
             methods,
             constructor,
             base,
@@ -490,6 +658,30 @@ fn write_value(w: &mut Writer, v: &Value) {
                 write_ffi_type(w, p);
             }
         }
+            Value::Type(t) => {
+            w.u8(12);
+            w.var_str(&t.name);
+            w.var_str(&t.kind);
+            match t.class_index {
+                Some(i) => {
+                    w.u8(1);
+                    w.var_u32(i as u32);
+                }
+                None => w.u8(0),
+            }
+            w.var_u32(t.fields.len() as u32);
+            for f in &t.fields {
+                w.var_str(f);
+            }
+            w.var_u32(t.field_types.len() as u32);
+            for ft in &t.field_types {
+                w.var_str(ft);
+            }
+            w.var_u32(t.methods.len() as u32);
+            for m in &t.methods {
+                w.var_str(m);
+            }
+        }
         // Arrays/objects/dicts/tasks are runtime-only; store as null in constants
         Value::Array(_) | Value::Dict(_) | Value::Object(_) | Value::Task(_) => w.u8(0),
     }
@@ -497,48 +689,51 @@ fn write_value(w: &mut Writer, v: &Value) {
 
 fn write_ffi_type(w: &mut Writer, ty: &crate::ffi::FfiType) {
     w.u8(ty.tag());
-    if let crate::ffi::FfiType::Struct(s) = ty {
-        w.var_str(&s.name);
-        w.var_u32(s.size as u32);
-        w.var_u32(s.align as u32);
-        w.u8(if s.packed { 1 } else { 0 });
-        w.var_u32(s.fields.len() as u32);
-        for f in &s.fields {
-            w.var_str(&f.name);
-            w.var_u32(f.offset as u32);
-            write_ffi_type(w, &f.ty);
+    match ty {
+        crate::ffi::FfiType::Struct(s) | crate::ffi::FfiType::StructPtr(s) => {
+            w.var_str(&s.name);
+            w.var_u32(s.size as u32);
+            w.var_u32(s.align as u32);
+            w.u8(if s.packed { 1 } else { 0 });
+            w.var_u32(s.fields.len() as u32);
+            for f in &s.fields {
+                w.var_str(&f.name);
+                w.var_u32(f.offset as u32);
+                write_ffi_type(w, &f.ty);
+            }
         }
+        _ => {}
     }
 }
 
 fn read_ffi_type(r: &mut Reader<'_>) -> CompileResult<crate::ffi::FfiType> {
     let tag = r.u8()?;
-    if tag != 14 {
+    if tag != 14 && tag != 15 {
         return Ok(crate::ffi::FfiType::from_u8(tag));
     }
-    let name = r.var_str()?;
-    let size = r.var_u32()? as usize;
-    let align = r.var_u32()? as usize;
-    let packed = r.u8()? != 0;
-    let n = r.var_u32()? as usize;
-    let mut fields = Vec::with_capacity(n);
-    for _ in 0..n {
-        let fname = r.var_str()?;
-        let offset = r.var_u32()? as usize;
-        let ty = read_ffi_type(r)?;
-        fields.push(crate::ffi::FfiFieldLayout {
-            name: fname,
-            offset,
-            ty,
-        });
-    }
-    Ok(crate::ffi::FfiType::Struct(crate::ffi::FfiStructLayout {
-        name,
-        size,
-        align,
-        fields,
-        packed,
-    }))
+    let layout = crate::ffi::FfiStructLayout {
+        name: r.var_str()?,
+        size: r.var_u32()? as usize,
+        align: r.var_u32()? as usize,
+        packed: r.u8()? != 0,
+        fields: {
+            let n = r.var_u32()? as usize;
+            let mut fields = Vec::with_capacity(n);
+            for _ in 0..n {
+                fields.push(crate::ffi::FfiFieldLayout {
+                    name: r.var_str()?,
+                    offset: r.var_u32()? as usize,
+                    ty: read_ffi_type(r)?,
+                });
+            }
+            fields
+        },
+    };
+    Ok(if tag == 15 {
+        crate::ffi::FfiType::StructPtr(layout)
+    } else {
+        crate::ffi::FfiType::Struct(layout)
+    })
 }
 
 fn write_lines(w: &mut Writer, lines: &[usize]) {
@@ -708,6 +903,104 @@ fn read_value_v9(r: &mut Reader<'_>) -> CompileResult<Value> {
                 params,
                 ret,
             })
+        }
+        other => {
+            return Err(CompileError::Io {
+                message: format!("unknown value tag {}", other),
+            });
+        }
+    })
+}
+
+fn read_value_v10(r: &mut Reader<'_>) -> CompileResult<Value> {
+    Ok(match r.u8()? {
+        0 => Value::Null,
+        1 => Value::Bool(r.u8()? != 0),
+        2 => Value::Int(r.var_i64()?),
+        3 => Value::UInt(r.var_u64()?),
+        4 => Value::Float(r.f64()?),
+        5 => {
+            let cp = r.var_u32()?;
+            Value::Char(char::from_u32(cp).unwrap_or('\0'))
+        }
+        6 => Value::String(Rc::<str>::from(r.var_str()?)),
+        7 => {
+            let name = r.var_str()?;
+            let chunk_index = r.var_u32()? as usize;
+            let arity = r.var_u32()? as usize;
+            let is_async = r.u8()? != 0;
+            let n = r.var_u32()? as usize;
+            let mut defaults = Vec::with_capacity(n);
+            for _ in 0..n {
+                defaults.push(read_value_v10(r)?);
+            }
+            Value::Function(FunctionRef {
+                name,
+                chunk_index,
+                arity,
+                defaults,
+                is_async,
+                upvalues: vec![],
+            })
+        }
+        8 => Value::Native(r.var_u32()? as usize),
+        9 => Value::Ptr(r.var_u64()? as usize),
+        10 => Value::TypeModule(Rc::<str>::from(r.var_str()?)),
+        11 => {
+            let name = r.var_str()?;
+            let library = r.var_str()?;
+            let symbol = r.var_str()?;
+            let abi = match r.u8()? {
+                1 => crate::ffi::FfiAbi::Stdcall,
+                2 => crate::ffi::FfiAbi::System,
+                _ => crate::ffi::FfiAbi::Cdecl,
+            };
+            let ret = read_ffi_type(r)?;
+            let n = r.var_u32()? as usize;
+            let mut params = Vec::with_capacity(n);
+            for _ in 0..n {
+                params.push(read_ffi_type(r)?);
+            }
+            Value::Ffi(crate::ffi::FfiFunction {
+                name,
+                library,
+                symbol,
+                abi,
+                params,
+                ret,
+            })
+        }
+        12 => {
+            let name = r.var_str()?;
+            let kind = r.var_str()?;
+            let class_index = if r.u8()? == 1 {
+                Some(r.var_u32()? as usize)
+            } else {
+                None
+            };
+            let n_fields = r.var_u32()? as usize;
+            let mut fields = Vec::with_capacity(n_fields);
+            for _ in 0..n_fields {
+                fields.push(r.var_str()?);
+            }
+            let n_ft = r.var_u32()? as usize;
+            let mut field_types = Vec::with_capacity(n_ft);
+            for _ in 0..n_ft {
+                field_types.push(r.var_str()?);
+            }
+            let n_methods = r.var_u32()? as usize;
+            let mut methods = Vec::with_capacity(n_methods);
+            for _ in 0..n_methods {
+                methods.push(r.var_str()?);
+            }
+            Value::Type(Rc::new(TypeHandle {
+                name,
+                kind,
+                class_index,
+                fields,
+                field_types,
+                methods,
+            }))
         }
         other => {
             return Err(CompileError::Io {

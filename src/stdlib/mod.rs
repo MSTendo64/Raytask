@@ -22,6 +22,7 @@ mod time;
 mod unsafe_mem;
 mod yaml;
 mod extra;
+pub mod reflect;
 
 use crate::error::RuntimeResult;
 use crate::value::{ObjectInstance, Value};
@@ -90,6 +91,8 @@ pub fn builtin_global(name: &str) -> Option<Value> {
         "List" => Value::TypeModule("List".into()),
         "Convert" => Value::TypeModule("Convert".into()),
         "Env" => Value::TypeModule("Env".into()),
+        "Type" => Value::TypeModule("Type".into()),
+        "Reflect" => Value::TypeModule("Type".into()),
         _ => return None,
     })
 }
@@ -97,6 +100,16 @@ pub fn builtin_global(name: &str) -> Option<Value> {
 /// Property / method lookup on values (instance + static modules).
 pub fn get_property(obj: &Value, name: &str) -> RuntimeResult<Value> {
     match obj {
+        Value::Type(t) => match name {
+            "Name" => Ok(Value::String(t.name.clone().into())),
+            "Kind" => Ok(Value::String(t.kind.clone().into())),
+            "Fields" => Ok(reflect::fields_list(t)),
+            "Methods" => Ok(reflect::methods_list(t)),
+            _ => Err(crate::error::RuntimeError::Message(format!(
+                "undefined property Type.{}",
+                name
+            ))),
+        },
         Value::TypeModule(module) => static_member(module, name),
         Value::Object(o) => {
             let o = o.borrow();
@@ -527,6 +540,13 @@ fn static_member(module: &str, name: &str) -> RuntimeResult<Value> {
         ("Env", "CurrentDir") => return extra::env_current_dir(&[]),
         ("Env", "OS") => return extra::env_os(&[]),
         ("Env", "Home") => return extra::env_home(&[]),
+        ("Type", "Of") => TYPE_OF,
+        ("Type", "GetField") => TYPE_GET_FIELD,
+        ("Type", "SetField") => TYPE_SET_FIELD,
+        ("Type", "Invoke") => TYPE_INVOKE,
+        ("Type", "IsInstance") => TYPE_IS_INSTANCE,
+        ("Type", "Fields") => TYPE_FIELDS,
+        ("Type", "Methods") => TYPE_METHODS,
         _ => {
             return Err(crate::error::RuntimeError::UndefinedVariable(format!(
                 "{}.{}",
@@ -936,6 +956,27 @@ pub fn call_native(id: usize, args: &[Value]) -> RuntimeResult<Value> {
         ENV_CURRENT_DIR => extra::env_current_dir(args),
         ENV_OS => extra::env_os(args),
         ENV_HOME => extra::env_home(args),
+
+        TYPE_OF => reflect::type_of(args),
+        TYPE_GET_FIELD => reflect::get_field(args),
+        TYPE_SET_FIELD => reflect::set_field(args),
+        TYPE_IS_INSTANCE => reflect::is_instance(args),
+        TYPE_FIELDS => match args.first() {
+            Some(Value::Type(t)) => Ok(reflect::fields_list(t)),
+            _ => Err(crate::error::RuntimeError::Message(
+                "Type.Fields expects a Type".into(),
+            )),
+        },
+        TYPE_METHODS => match args.first() {
+            Some(Value::Type(t)) => Ok(reflect::methods_list(t)),
+            _ => Err(crate::error::RuntimeError::Message(
+                "Type.Methods expects a Type".into(),
+            )),
+        },
+        // TYPE_INVOKE handled in Vm::call_native_with_vm
+        TYPE_INVOKE => Err(crate::error::RuntimeError::Message(
+            "Type.Invoke requires VM dispatch".into(),
+        )),
 
         _ => Err(crate::error::RuntimeError::Message(format!(
             "unknown native #{}",

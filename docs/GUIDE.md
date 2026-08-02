@@ -86,7 +86,17 @@ Board kits (`examples/boards/`) ship real `link.ld` + `startup.c` + GPIO/UART BS
 
 `--target embedded|kernel` lowers **optimized SSA** to C (`--optimize speed|size` recommended). Types / `[address:]` / consts still come from the AST; function bodies are SSA block CFGs (`goto bbN`).
 
-Language extras for C-like work: `union`, `[packed]`, `[align: N]`, `[repr: "C"]`, `volatile T`, `sizeof(T)`, `offsetof(T, field)`, `unsafe { asm("nop"); }`.
+Language extras for C-like work: `union`, `[packed]`, `[align: N]`, `[repr: "C"]`, `volatile T`, `sizeof(T)`, `offsetof(T, field)`, and **inline asm** inside `unsafe`:
+
+```raytask
+unsafe {
+    asm("nop");
+    asm("addl %1, %0" : "=r"(sum) : "r"(a), "0"(b) : "cc");  // GCC-style
+    asm("addl {1}, {0}", out sum, in a);                     // sugar → %N
+}
+```
+
+Emitted as `__asm__ volatile (...)` for `--target embedded|kernel|native` C backends. The VM treats asm as a no-op.
 
 See `docs/spec/05-systems.md` and `docs/ROADMAP.md`.
 
@@ -246,6 +256,23 @@ raytask link main.rtbc --platform uefi -o main.efi
 ```
 
 `efi` / `raw` / `.rtbc` link still package RTBC (or a UEFI mini-interpreter). That is separate from Host True AOT.
+
+### Reflection (VM)
+
+```bash
+raytask run examples/reflect_demo.rt
+```
+
+```raytask
+Type t = typeof(Point);
+print(t.Name);                 // "Point"
+print(nameof(p.X));            // "X"
+print(obj is Animal);          // inheritance-aware
+Type.SetField(obj, "X", 1);
+print(Type.Invoke(obj, "Sum"));
+```
+
+`Type.Of`, `GetField`, `SetField`, `Invoke`, `IsInstance`, plus `t.Fields` / `t.Methods`. AOT/C keeps stubs for `typeof`/`nameof`.
 
 ### Vendored TinyCC backend
 

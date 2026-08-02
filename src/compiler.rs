@@ -1,11 +1,11 @@
 //! AST → bytecode compiler.
 
 use crate::ast::*;
-use crate::bytecode::{Chunk, ClassInfo, LocalDebug, Module, Op};
+use crate::bytecode::{Chunk, ClassInfo, ClassKind, LocalDebug, Module, Op};
 use crate::error::{CompileError, CompileResult};
 use crate::ffi::{self, FfiEmbed, FfiModuleInfo};
 use crate::span::Span;
-use crate::value::{FunctionRef, Value};
+use crate::value::{FunctionRef, TypeHandle, Value};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -125,9 +125,8 @@ impl Compiler {
         // Emit call to Main if present
         if self.functions.contains_key("Main") {
             let line = 1;
-            self.chunk().emit_op(Op::GetGlobal, line);
             let name_idx = self.ensure_global("Main");
-            self.chunk().emit_byte(name_idx, line);
+            self.chunk().emit_get_global(name_idx, line);
             self.chunk().emit_op(Op::Call, line);
             self.chunk().emit_byte(0, line); // arity
             // If Main is async, await the returned Task before exit
@@ -155,13 +154,16 @@ impl Compiler {
         &mut self.module.chunks[self.current]
     }
 
-    fn ensure_global(&mut self, name: &str) -> u8 {
+    fn ensure_global(&mut self, name: &str) -> u16 {
         if let Some(i) = self.module.globals.iter().position(|g| g == name) {
-            return i as u8;
+            return i as u16;
         }
         let i = self.module.globals.len();
+        if i > u16::MAX as usize {
+            panic!("too many globals");
+        }
         self.module.globals.push(name.to_string());
-        i as u8
+        i as u16
     }
 
     fn declare_item(&mut self, item: &Item) -> CompileResult<()> {
@@ -199,7 +201,9 @@ impl Compiler {
                 let class_idx = self.module.classes.len();
                 let mut info = ClassInfo {
                     name: c.name.clone(),
+                    kind: ClassKind::Class,
                     fields: Vec::new(),
+                    field_types: Vec::new(),
                     methods: Vec::new(),
                     constructor: None,
                     base: c.bases.first().and_then(|b| self.classes.get(&b.name).copied()),
@@ -209,12 +213,16 @@ impl Compiler {
                     match m {
                         Member::Field(f) => {
                             if !f.is_static {
-                                info.fields.push(f.name.clone())
+                                info.fields.push(f.name.clone());
+                                info.field_types.push(type_ref_display(
+                                    f.ty.as_ref().unwrap_or(&TypeRef::named("dyn", f.span)),
+                                ));
                             }
                         }
                         Member::Property(p) => {
                             if !p.is_static {
-                                info.fields.push(p.name.clone())
+                                info.fields.push(p.name.clone());
+                                info.field_types.push(type_ref_display(&p.ty));
                             }
                         }
                         Member::Method(f) => {
@@ -287,7 +295,9 @@ impl Compiler {
                 let class_idx = self.module.classes.len();
                 let mut info = ClassInfo {
                     name: s.name.clone(),
+                    kind: ClassKind::Struct,
                     fields: Vec::new(),
+                    field_types: Vec::new(),
                     methods: Vec::new(),
                     constructor: None,
                     base: None,
@@ -297,7 +307,10 @@ impl Compiler {
                     match m {
                         Member::Field(f) => {
                             if !f.is_static {
-                                info.fields.push(f.name.clone())
+                                info.fields.push(f.name.clone());
+                                info.field_types.push(type_ref_display(
+                                    f.ty.as_ref().unwrap_or(&TypeRef::named("dyn", f.span)),
+                                ));
                             }
                         }
                         Member::Method(f) => {
@@ -332,7 +345,9 @@ impl Compiler {
                 let class_idx = self.module.classes.len();
                 let mut info = ClassInfo {
                     name: u.name.clone(),
+                    kind: ClassKind::Union,
                     fields: Vec::new(),
+                    field_types: Vec::new(),
                     methods: Vec::new(),
                     constructor: None,
                     base: None,
@@ -342,6 +357,9 @@ impl Compiler {
                     if let Member::Field(f) = m {
                         if !f.is_static {
                             info.fields.push(f.name.clone());
+                            info.field_types.push(type_ref_display(
+                                f.ty.as_ref().unwrap_or(&TypeRef::named("dyn", f.span)),
+                            ));
                         }
                     }
                 }
@@ -375,8 +393,7 @@ impl Compiler {
                 self.chunk()
                     .emit_constant(Value::TypeModule(u.name.clone().into()), line);
                 let g = self.ensure_global(&u.name);
-                self.chunk().emit_op(Op::DefineGlobal, line);
-                self.chunk().emit_byte(g, line);
+                self.chunk().emit_define_global(g, line);
                 self.current = prev;
                 Ok(())
             }
@@ -384,8 +401,7 @@ impl Compiler {
                 let line = c.span.line;
                 self.compile_expr(&c.value)?;
                 let g = self.ensure_global(&c.name);
-                self.chunk().emit_op(Op::DefineGlobal, line);
-                self.chunk().emit_byte(g, line);
+                self.chunk().emit_define_global(g, line);
                 Ok(())
             }
             Item::Attribute(_, _) => unreachable!("peeled"),
@@ -451,8 +467,7 @@ impl Compiler {
             self.current = 0;
             self.chunk().emit_constant(Value::Ffi(ffi_fn), line);
             let g = self.ensure_global(&f.name);
-            self.chunk().emit_op(Op::DefineGlobal, line);
-            self.chunk().emit_byte(g, line);
+            self.chunk().emit_define_global(g, line);
             self.current = prev;
             return Ok(());
         }
@@ -505,8 +520,7 @@ impl Compiler {
         });
         self.chunk().emit_constant(func, line);
         let g = self.ensure_global(&f.name);
-        self.chunk().emit_op(Op::DefineGlobal, line);
-        self.chunk().emit_byte(g, line);
+        self.chunk().emit_define_global(g, line);
         if f.is_extension {
             if let Some(p) = f.params.first() {
                 let key = format!("{}.{}", p.ty.name, f.name);
@@ -522,8 +536,7 @@ impl Compiler {
                     line,
                 );
                 let g2 = self.ensure_global(&key);
-                self.chunk().emit_op(Op::DefineGlobal, line);
-                self.chunk().emit_byte(g2, line);
+                self.chunk().emit_define_global(g2, line);
             }
         }
         self.current = prev;
@@ -680,8 +693,7 @@ impl Compiler {
                         });
                         self.chunk().emit_constant(func, line);
                         let g = self.ensure_global(&key);
-                        self.chunk().emit_op(Op::DefineGlobal, line);
-                        self.chunk().emit_byte(g, line);
+                        self.chunk().emit_define_global(g, line);
                         self.current = prev;
                     }
                 }
@@ -757,8 +769,7 @@ impl Compiler {
             self.chunk()
                 .emit_constant(Value::TypeModule(c.name.clone().into()), line);
             let g = self.ensure_global(&c.name);
-            self.chunk().emit_op(Op::DefineGlobal, line);
-            self.chunk().emit_byte(g, line);
+            self.chunk().emit_define_global(g, line);
         }
         self.current = prev;
         Ok(())
@@ -792,8 +803,7 @@ impl Compiler {
             self.chunk()
                 .emit_constant(Value::TypeModule(s.name.clone().into()), line);
             let g = self.ensure_global(&s.name);
-            self.chunk().emit_op(Op::DefineGlobal, line);
-            self.chunk().emit_byte(g, line);
+            self.chunk().emit_define_global(g, line);
         }
         self.current = prev;
         Ok(())
@@ -845,15 +855,13 @@ impl Compiler {
                         self.chunk().emit_op(Op::Null, f.span.line);
                     }
                     let g = self.ensure_global(&key);
-                    self.chunk().emit_op(Op::DefineGlobal, f.span.line);
-                    self.chunk().emit_byte(g, f.span.line);
+                    self.chunk().emit_define_global(g, f.span.line);
                 }
                 Member::Property(p) if p.is_static && p.auto => {
                     let key = format!("{}.{}", type_name, p.name);
                     self.chunk().emit_op(Op::Null, p.span.line);
                     let g = self.ensure_global(&key);
-                    self.chunk().emit_op(Op::DefineGlobal, p.span.line);
-                    self.chunk().emit_byte(g, p.span.line);
+                    self.chunk().emit_define_global(g, p.span.line);
                 }
                 _ => {}
             }
@@ -1081,8 +1089,7 @@ impl Compiler {
             }
             NameRes::Global => {
                 let g = self.ensure_global(name);
-                self.chunk().emit_op(Op::GetGlobal, line);
-                self.chunk().emit_byte(g, line);
+                self.chunk().emit_get_global(g, line);
             }
         }
     }
@@ -1099,8 +1106,7 @@ impl Compiler {
             }
             NameRes::Global => {
                 let g = self.ensure_global(name);
-                self.chunk().emit_op(Op::SetGlobal, line);
-                self.chunk().emit_byte(g, line);
+                self.chunk().emit_set_global(g, line);
             }
         }
     }
@@ -1153,8 +1159,7 @@ impl Compiler {
                     self.chunk().emit_op(Op::Pop, d.span.line);
                 } else {
                     let g = self.ensure_global(&d.name);
-                    self.chunk().emit_op(Op::DefineGlobal, d.span.line);
-                    self.chunk().emit_byte(g, d.span.line);
+                    self.chunk().emit_define_global(g, d.span.line);
                 }
             }
             Stmt::Const(c) => {
@@ -1167,8 +1172,7 @@ impl Compiler {
                     self.chunk().emit_op(Op::Pop, c.span.line);
                 } else {
                     let g = self.ensure_global(&c.name);
-                    self.chunk().emit_op(Op::DefineGlobal, c.span.line);
-                    self.chunk().emit_byte(g, c.span.line);
+                    self.chunk().emit_define_global(g, c.span.line);
                 }
             }
             Stmt::Return(expr, span) => {
@@ -1768,12 +1772,10 @@ impl Compiler {
                                 }
                                 NameRes::Global => {
                                     let g = self.ensure_global(name);
-                                    self.chunk().emit_op(Op::GetGlobal, line);
-                                    self.chunk().emit_byte(g, line);
+                                    self.chunk().emit_get_global(g, line);
                                     self.chunk().emit_constant(Value::Int(1), line);
                                     self.chunk().emit_op(Op::Add, line);
-                                    self.chunk().emit_op(Op::SetGlobal, line);
-                                    self.chunk().emit_byte(g, line);
+                                    self.chunk().emit_set_global(g, line);
                                 }
                             }
                         } else {
@@ -1812,12 +1814,10 @@ impl Compiler {
                                 }
                                 NameRes::Global => {
                                     let g = self.ensure_global(name);
-                                    self.chunk().emit_op(Op::GetGlobal, line);
-                                    self.chunk().emit_byte(g, line);
+                                    self.chunk().emit_get_global(g, line);
                                     self.chunk().emit_constant(Value::Int(1), line);
                                     self.chunk().emit_op(Op::Sub, line);
-                                    self.chunk().emit_op(Op::SetGlobal, line);
-                                    self.chunk().emit_byte(g, line);
+                                    self.chunk().emit_set_global(g, line);
                                 }
                             }
                         } else {
@@ -2163,16 +2163,22 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Is { expr, .. } => {
+            Expr::Is { expr, ty, .. } => {
                 self.compile_expr(expr)?;
-                // Simplified: always leave bool based on non-null
-                self.chunk().emit_op(Op::IsNull, line);
-                self.chunk().emit_op(Op::Not, line);
+                let handle = self.type_handle_for(ty);
+                self.chunk().emit_constant(Value::Type(Rc::new(handle)), line);
+                self.chunk().emit_op(Op::IsInstance, line);
             }
             Expr::As { expr, .. } => self.compile_expr(expr)?,
-            Expr::TypeOf(_, _) => {
+            Expr::TypeOf(ty, _) => {
+                let handle = self.type_handle_for(ty);
                 self.chunk()
-                    .emit_constant(Value::String("Type".into()), line);
+                    .emit_constant(Value::Type(Rc::new(handle)), line);
+            }
+            Expr::NameOf(target, _) => {
+                let name = nameof_string(target);
+                self.chunk()
+                    .emit_constant(Value::String(name.into()), line);
             }
             Expr::SizeOf(ty, _) => {
                 let n = if let Some(layout) = self.struct_layouts.get(&ty.name) {
@@ -2238,6 +2244,99 @@ fn peel_attributes(item: &Item) -> (Vec<&Attribute>, &Item) {
             (rest, core)
         }
         other => (Vec::new(), other),
+    }
+}
+
+fn type_ref_display(ty: &TypeRef) -> String {
+    let mut s = ty.name.clone();
+    if !ty.args.is_empty() {
+        s.push('<');
+        for (i, a) in ty.args.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&type_ref_display(a));
+        }
+        s.push('>');
+    }
+    if ty.is_array {
+        for _ in 0..ty.array_dims.max(1) {
+            s.push_str("[]");
+        }
+    }
+    if ty.nullable {
+        s.push('?');
+    }
+    if ty.volatile {
+        s = format!("volatile {s}");
+    }
+    s
+}
+
+fn nameof_string(target: &NameOfExpr) -> String {
+    match target {
+        NameOfExpr::Ident(name) => name.clone(),
+        NameOfExpr::Member { field, .. } => field.clone(),
+    }
+}
+
+fn is_primitive_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "void"
+            | "bool"
+            | "byte"
+            | "sbyte"
+            | "short"
+            | "ushort"
+            | "int"
+            | "uint"
+            | "long"
+            | "ulong"
+            | "float"
+            | "double"
+            | "char"
+            | "string"
+            | "object"
+            | "dyn"
+            | "var"
+            | "ptr"
+            | "nint"
+            | "nuint"
+    )
+}
+
+impl Compiler {
+    fn type_handle_for(&self, ty: &TypeRef) -> TypeHandle {
+        let name = type_ref_display(ty);
+        if ty.is_array {
+            return TypeHandle {
+                name,
+                kind: "array".into(),
+                class_index: None,
+                fields: Vec::new(),
+                field_types: Vec::new(),
+                methods: Vec::new(),
+            };
+        }
+        if let Some(&idx) = self.classes.get(&ty.name) {
+            if let Some(info) = self.module.classes.get(idx) {
+                return TypeHandle::from_class_info(info, idx);
+            }
+            return TypeHandle::from_class(ty.name.clone(), ClassKind::Class, idx);
+        }
+        if is_primitive_type_name(&ty.name) {
+            TypeHandle::primitive(ty.name.clone())
+        } else {
+            TypeHandle {
+                name: ty.name.clone(),
+                kind: "type".into(),
+                class_index: None,
+                fields: Vec::new(),
+                field_types: Vec::new(),
+                methods: Vec::new(),
+            }
+        }
     }
 }
 

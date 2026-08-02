@@ -318,12 +318,30 @@ pub enum Stmt {
         span: Span,
     },
     Unsafe(Block, Span),
-    /// Inline assembly escape (`asm("...");`) — native/C backends only.
+    /// Inline assembly escape — C/native backends emit `__asm__ volatile (...)`.
+    ///
+    /// Forms:
+    /// - `asm("nop");`
+    /// - `asm("add %1, %0" : "=r"(sum) : "r"(a), "r"(b) : "cc");` (GCC-style)
+    /// - `asm("add {1}, {0}", out sum, in a, in b);` (RayTask sugar → `%N`)
     Asm {
         template: String,
+        outputs: Vec<AsmOperand>,
+        inputs: Vec<AsmOperand>,
+        clobbers: Vec<String>,
+        /// Always emitted as `volatile` today; reserved if we add non-volatile later.
+        is_volatile: bool,
         span: Span,
     },
     Block(Block),
+}
+
+/// One operand in extended inline asm (`"=r"(x)` / `out x` / `in y`).
+#[derive(Debug, Clone)]
+pub struct AsmOperand {
+    /// GCC constraint string, e.g. `"=r"`, `"r"`, `"+m"`.
+    pub constraint: String,
+    pub expr: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -457,6 +475,8 @@ pub enum Expr {
         span: Span,
     },
     TypeOf(TypeRef, Span),
+    /// Compile-time name of an identifier or member (`nameof(x)`, `nameof(p.X)`).
+    NameOf(NameOfExpr, Span),
     /// Compile-time size in bytes of a type (native/C); VM uses known primitive sizes.
     SizeOf(TypeRef, Span),
     /// Byte offset of a field within a struct/union type.
@@ -486,6 +506,15 @@ pub enum Expr {
     Grouped(Box<Expr>, Span),
     /// Error-propagate operator `?`
     Try(Box<Expr>, Span),
+}
+
+#[derive(Debug, Clone)]
+pub enum NameOfExpr {
+    Ident(String),
+    Member {
+        object: Box<Expr>,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -577,6 +606,7 @@ impl Expr {
             | Expr::Ternary { span: s, .. }
             | Expr::Cast { span: s, .. }
             | Expr::TypeOf(_, s)
+            | Expr::NameOf(_, s)
             | Expr::SizeOf(_, s)
             | Expr::OffsetOf { span: s, .. }
             | Expr::Is { span: s, .. }

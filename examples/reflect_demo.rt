@@ -1,0 +1,37 @@
+/// Reflection demo: typeof, nameof, is, Type.GetField / SetField / Invoke.
+
+import bstd.reflect;
+
+class Animal {
+    string Name;
+}
+
+class Dog : Animal {
+    int Age;
+
+    int DoubleAge() {
+        return this.Age * 2;
+    }
+}
+
+void Main() {
+    Dog d = new Dog();
+    d.Name = "Rex";
+    d.Age = 5;
+
+    Type t = typeof(Dog);
+    print(t.Name);
+    print(t.Kind);
+    print(nameof(Dog));
+    print(nameof(d.Age));
+
+    print(d is Dog);
+    print(d is Animal);
+
+    print(Type.GetField(d, "Age"));
+    Type.SetField(d, "Age", 7);
+    print(Type.Invoke(d, "DoubleAge"));
+
+    Type ot = Type.Of(d);
+    print(ot.Name);
+}

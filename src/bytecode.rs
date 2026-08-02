@@ -68,6 +68,14 @@ pub enum Op {
     GetUpvalue,
     /// Write closed-over value (operand = upvalue index); leaves value on stack.
     SetUpvalue,
+    /// Pop Type, pop value; push bool — inheritance / primitive check.
+    IsInstance,
+    /// Constant with u16 index (when pool exceeds 255).
+    Constant16,
+    /// Global ops with u16 index (when globals exceed 255).
+    GetGlobal16,
+    SetGlobal16,
+    DefineGlobal16,
 }
 
 impl Op {
@@ -131,6 +139,11 @@ impl Op {
             56 => Self::Await,
             57 => Self::GetUpvalue,
             58 => Self::SetUpvalue,
+            59 => Self::IsInstance,
+            60 => Self::Constant16,
+            61 => Self::GetGlobal16,
+            62 => Self::SetGlobal16,
+            63 => Self::DefineGlobal16,
             _ => return None,
         })
     }
@@ -195,6 +208,11 @@ impl Op {
             Self::Await => "Await",
             Self::GetUpvalue => "GetUpvalue",
             Self::SetUpvalue => "SetUpvalue",
+            Self::IsInstance => "IsInstance",
+            Self::Constant16 => "Constant16",
+            Self::GetGlobal16 => "GetGlobal16",
+            Self::SetGlobal16 => "SetGlobal16",
+            Self::DefineGlobal16 => "DefineGlobal16",
         }
     }
 }
@@ -277,25 +295,61 @@ impl Chunk {
         self.emit_u16(jump as u16, line);
     }
 
-    pub fn add_constant(&mut self, value: Value) -> u8 {
+    pub fn add_constant(&mut self, value: Value) -> u16 {
         // dedup simple constants
         for (i, c) in self.constants.iter().enumerate() {
             if c == &value {
-                return i as u8;
+                return i as u16;
             }
         }
         let idx = self.constants.len();
-        if idx > 255 {
-            panic!("too many constants");
+        if idx > u16::MAX as usize {
+            panic!("too many constants (max {})", u16::MAX);
         }
         self.constants.push(value);
-        idx as u8
+        idx as u16
     }
 
     pub fn emit_constant(&mut self, value: Value, line: usize) {
         let idx = self.add_constant(value);
-        self.emit_op(Op::Constant, line);
-        self.emit_byte(idx, line);
+        if idx <= u8::MAX as u16 {
+            self.emit_op(Op::Constant, line);
+            self.emit_byte(idx as u8, line);
+        } else {
+            self.emit_op(Op::Constant16, line);
+            self.emit_u16(idx, line);
+        }
+    }
+
+    /// Emit GetGlobal / GetGlobal16 for a global table index.
+    pub fn emit_get_global(&mut self, idx: u16, line: usize) {
+        if idx <= u8::MAX as u16 {
+            self.emit_op(Op::GetGlobal, line);
+            self.emit_byte(idx as u8, line);
+        } else {
+            self.emit_op(Op::GetGlobal16, line);
+            self.emit_u16(idx, line);
+        }
+    }
+
+    pub fn emit_set_global(&mut self, idx: u16, line: usize) {
+        if idx <= u8::MAX as u16 {
+            self.emit_op(Op::SetGlobal, line);
+            self.emit_byte(idx as u8, line);
+        } else {
+            self.emit_op(Op::SetGlobal16, line);
+            self.emit_u16(idx, line);
+        }
+    }
+
+    pub fn emit_define_global(&mut self, idx: u16, line: usize) {
+        if idx <= u8::MAX as u16 {
+            self.emit_op(Op::DefineGlobal, line);
+            self.emit_byte(idx as u8, line);
+        } else {
+            self.emit_op(Op::DefineGlobal16, line);
+            self.emit_u16(idx, line);
+        }
     }
 
     pub fn read_u16(&self, ip: usize) -> u16 {
@@ -313,10 +367,39 @@ pub struct Module {
     pub stdlib_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ClassKind {
+    Class = 0,
+    Struct = 1,
+    Union = 2,
+}
+
+impl ClassKind {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Struct,
+            2 => Self::Union,
+            _ => Self::Class,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Class => "class",
+            Self::Struct => "struct",
+            Self::Union => "union",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub name: String,
+    pub kind: ClassKind,
     pub fields: Vec<String>,
+    /// Parallel to `fields`: simple type names from the AST (e.g. `"int"`, `"Point"`).
+    pub field_types: Vec<String>,
     pub methods: Vec<(String, usize)>, // name -> chunk index
     pub constructor: Option<usize>,
     /// Index of base class in Module.classes, if any.

@@ -1,0 +1,9 @@
+/// Reflection API (`bstd.reflect` / global `Type`).
+///
+/// Runtime (VM) surface:
+/// - `typeof(T)` → `Type`
+/// - `nameof(x)` / `nameof(a.b)` → string
+/// - `x is T` → inheritance-aware bool
+/// - `Type.Of(value)`, `Type.GetField`, `Type.SetField`, `Type.Invoke`, `Type.IsInstance`
+/// - `t.Name`, `t.Kind`, `t.Fields`, `t.Methods`
+module bstd.reflect;

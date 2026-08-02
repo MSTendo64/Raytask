@@ -9,7 +9,7 @@ RayTask's north star: **one language** that covers managed apps *and* systems so
 
 ## This milestone (landed)
 
-- Language: `union`, `[packed]`/`[align]`/`[repr:"C"]`, `volatile`, `sizeof`/`offsetof`, `asm`
+- Language: `union`, `[packed]`/`[align]`/`[repr:"C"]`, `volatile`, `sizeof`/`offsetof`, **extended `asm`** (GCC operands + sugar)
 - Freestanding bump allocator (64 KiB arena) instead of null `malloc`
 - Opaque struct/union tags in C header FFI
 - **By-value C ABI** for `[repr: "C"]` structs in FFI (register if size 1/2/4/8, else pointer-to-copy / sret)
@@ -18,7 +18,8 @@ RayTask's north star: **one language** that covers managed apps *and* systems so
 - **True AOT** — `--target native` / `native-bin` = SSA → C → TCC/gcc/clang (**no RTBC interpreter**); `--target app` keeps stub+bytecode
 - **Built-in linker** — ELF64/COFF ingest, symbol resolve, relocs, PE/ELF emit; `raytask link *.o`
 - **Multi-arch** — `--arch x86_64|aarch64|arm|i686` + `--platform`; cross via clang/zig `-target`
- - Domain stubs: `bstd.hal`, `bstd.bots`, `bstd.game`
+- **Reflection (VM)** — `typeof` / `nameof` / `is`, `Type.Of|GetField|SetField|Invoke`, `bstd.reflect`
+- Domain stubs: `bstd.hal`, `bstd.bots`, `bstd.game`
 - Spec chapter: `docs/spec/05-systems.md`
 - Example: `examples/systems/blink.rt`, `examples/boards/`
 

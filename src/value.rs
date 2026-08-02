@@ -1,5 +1,6 @@
 //! Runtime values for the RayTask VM.
 
+use crate::bytecode::ClassKind;
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::gc::{GcArray, GcDict, GcObject};
 use std::cell::RefCell;
@@ -10,6 +11,53 @@ use std::rc::Rc;
 /// Shared mutable cell for a closed-over local (capture-by-value at closure creation,
 /// shared across nested closures that chain the same upvalue).
 pub type UpvalueCell = Rc<RefCell<Value>>;
+
+/// Runtime reflection handle produced by `typeof` / `Type.Of`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeHandle {
+    pub name: String,
+    /// `"class" | "struct" | "union" | "primitive" | "array" | …`
+    pub kind: String,
+    pub class_index: Option<usize>,
+    pub fields: Vec<String>,
+    pub field_types: Vec<String>,
+    pub methods: Vec<String>,
+}
+
+impl TypeHandle {
+    pub fn primitive(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: "primitive".into(),
+            class_index: None,
+            fields: Vec::new(),
+            field_types: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+
+    pub fn from_class_info(info: &crate::bytecode::ClassInfo, class_index: usize) -> Self {
+        Self {
+            name: info.name.clone(),
+            kind: info.kind.as_str().into(),
+            class_index: Some(class_index),
+            fields: info.fields.clone(),
+            field_types: info.field_types.clone(),
+            methods: info.methods.iter().map(|(n, _)| n.clone()).collect(),
+        }
+    }
+
+    pub fn from_class(name: impl Into<String>, kind: ClassKind, class_index: usize) -> Self {
+        Self {
+            name: name.into(),
+            kind: kind.as_str().into(),
+            class_index: Some(class_index),
+            fields: Vec::new(),
+            field_types: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -26,6 +74,8 @@ pub enum Value {
     Function(FunctionRef),
     Native(usize),
     TypeModule(Rc<str>),
+    /// Reflection type handle (`typeof(T)`, `Type.Of(x)`).
+    Type(Rc<TypeHandle>),
     Task(crate::async_rt::TaskHandle),
     Ffi(crate::ffi::FfiFunction),
     Ptr(usize),
@@ -79,6 +129,7 @@ impl Value {
             Value::Function(_) => "function",
             Value::Native(_) => "native",
             Value::TypeModule(_) => "type",
+            Value::Type(_) => "Type",
             Value::Task(_) => "Task",
             Value::Ffi(_) => "ffi",
             Value::Ptr(_) => "ptr",
@@ -161,6 +212,7 @@ impl Value {
             }
             Value::Native(i) => format!("<native #{}>", i),
             Value::TypeModule(n) => format!("<type {}>", n),
+            Value::Type(t) => format!("<Type {}>", t.name),
             Value::Task(t) => match &t.borrow().state {
                 crate::async_rt::TaskState::Pending => "<Task pending>".into(),
                 crate::async_rt::TaskState::Ready(_) => "<Task ready>".into(),
@@ -185,6 +237,8 @@ impl Value {
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Ptr(a), Value::Ptr(b)) => a == b,
+            (Value::Type(a), Value::Type(b)) => a == b,
+            (Value::TypeModule(a), Value::TypeModule(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
             (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),

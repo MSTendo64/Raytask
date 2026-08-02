@@ -9,6 +9,7 @@
 - Transpile dump (`transpile_c`) / freestanding SSA→C (`embedded` / `kernel`)
 - CLI: `build`, `run`, `test`, `new`, `check`, `doc`, package commands
 - Classes, structs, interfaces, generics, `var` / `dyn`, properties, async
+- Reflection: `typeof`, `nameof`, `is`, `Type` / `bstd.reflect` (VM)
 - Memory: GC (default in the VM), `stack` / `owned` / `unsafe`
 - Standard library `bstd.*` (core APIs as VM natives)
 

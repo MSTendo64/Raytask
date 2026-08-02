@@ -22,7 +22,9 @@ pub fn emit_module(ssa: &SsaModule) -> Module {
         .iter()
         .map(|c| ClassInfo {
             name: c.name.clone(),
+            kind: crate::bytecode::ClassKind::Class,
             fields: c.fields.clone(),
+            field_types: c.fields.iter().map(|_| "dyn".into()).collect(),
             methods: c
                 .methods
                 .iter()
@@ -222,20 +224,17 @@ impl<'a> Emitter<'a> {
                 self.store_result(inst.id, line);
             }
             InstKind::GetGlobal { index } => {
-                self.chunk.emit_op(Op::GetGlobal, line);
-                self.chunk.emit_byte(*index as u8, line);
+                self.chunk.emit_get_global(*index as u16, line);
                 self.store_result(inst.id, line);
             }
             InstKind::SetGlobal { index, value } => {
                 self.push_value(*value, line);
-                self.chunk.emit_op(Op::SetGlobal, line);
-                self.chunk.emit_byte(*index as u8, line);
+                self.chunk.emit_set_global(*index as u16, line);
                 self.chunk.emit_op(Op::Pop, line);
             }
             InstKind::DefineGlobal { index, value } => {
                 self.push_value(*value, line);
-                self.chunk.emit_op(Op::DefineGlobal, line);
-                self.chunk.emit_byte(*index as u8, line);
+                self.chunk.emit_define_global(*index as u16, line);
             }
             InstKind::GetProperty { object, name } => {
                 self.push_value(*object, line);
@@ -398,8 +397,7 @@ impl<'a> Emitter<'a> {
                 self.chunk.emit_byte(args.len() as u8, line);
             }
             InstKind::GetGlobal { index } => {
-                self.chunk.emit_op(Op::GetGlobal, line);
-                self.chunk.emit_byte(*index as u8, line);
+                self.chunk.emit_get_global(*index as u16, line);
             }
             InstKind::GetProperty { object, name } => {
                 self.push_value(*object, line);

@@ -1831,9 +1831,17 @@ impl TypeChecker {
                 self.check_block(body);
                 self.in_unsafe = prev;
             }
-            Stmt::Asm { span, .. } => {
+            Stmt::Asm {
+                span,
+                outputs,
+                inputs,
+                ..
+            } => {
                 if !self.in_unsafe {
                     self.err("inline asm requires an 'unsafe' block", *span);
+                }
+                for op in outputs.iter().chain(inputs.iter()) {
+                    let _ = self.check_expr(&op.expr);
                 }
             }
             Stmt::Block(b) => self.check_block(b),
@@ -2018,6 +2026,7 @@ impl TypeChecker {
                 to
             }
             Expr::TypeOf(_, _) => Ty::Named("Type".into()),
+            Expr::NameOf(_, _) => Ty::String,
             Expr::SizeOf(ty, _) => {
                 let _ = self.resolve_type_ref(ty);
                 Ty::Int
@@ -3140,6 +3149,14 @@ impl TypeChecker {
         }
         if matches!(from, Ty::Nullable(_)) && !matches!(to, Ty::Nullable(_) | Ty::Dyn | Ty::Error) {
             return false;
+        }
+        // Allow implicit conversions between integral types (C-like / FFI-friendly).
+        if from.is_integral() && to.is_integral() {
+            return true;
+        }
+        // float ↔ double (literals are typed as double; many APIs use float).
+        if matches!((from, to), (Ty::Float, Ty::Double) | (Ty::Double, Ty::Float)) {
+            return true;
         }
         match (from, to) {
             (

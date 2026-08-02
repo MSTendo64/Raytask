@@ -60,6 +60,8 @@ pub enum FfiType {
     CString,
     /// POD aggregate with C layout — passed/returned by value ABI.
     Struct(FfiStructLayout),
+    /// Pointer to a known POD struct (`ptr<T>`). Always passed as `T*` (packed temp).
+    StructPtr(FfiStructLayout),
 }
 
 impl FfiType {
@@ -80,6 +82,7 @@ impl FfiType {
             FfiType::Ptr => 12,
             FfiType::CString => 13,
             FfiType::Struct(_) => 14,
+            FfiType::StructPtr(_) => 15,
         }
     }
 
@@ -95,6 +98,14 @@ impl FfiType {
             return FfiType::Struct(layout.clone());
         }
         if tr.name == "ptr" || tr.name == "pointer" {
+            // ptr<KnownStruct> → pack object and pass pointer (C `T*`).
+            // Stored as Struct so call() packs Value::Object; large POD always
+            // goes by pointer under Win64/SysV.
+            if let Some(inner) = tr.args.first() {
+                if let Some(layout) = layouts.get(&inner.name) {
+                    return FfiType::StructPtr(layout.clone());
+                }
+            }
             return FfiType::Ptr;
         }
         match tr.name.as_str() {
@@ -122,7 +133,7 @@ impl FfiType {
     }
 
     pub fn is_struct(&self) -> bool {
-        matches!(self, FfiType::Struct(_))
+        matches!(self, FfiType::Struct(_) | FfiType::StructPtr(_))
     }
 
     pub fn from_u8(v: u8) -> Self {
@@ -390,7 +401,7 @@ pub fn compile_embed(embed: &FfiEmbed, work_dir: Option<&Path>) -> RuntimeResult
 
     if !compile_shared(&c_path, &lib_path)? {
         return Err(RuntimeError::Message(format!(
-            "failed to compile embedded C for '{}': no working C compiler (gcc/clang/cl)",
+            "failed to compile embedded C for '{}': no working C compiler (tcc/gcc/clang/cl)",
             embed.lib_name
         )));
     }
@@ -435,6 +446,45 @@ fn compile_shared(c_path: &Path, lib_path: &Path) -> RuntimeResult<bool> {
         {
             if st.success() && lib_path.exists() {
                 return Ok(true);
+            }
+        }
+    }
+
+    // Vendored TinyCC — works without an external host toolchain.
+    {
+        let mut link_libs = Vec::new();
+        // Auto-link sibling DLLs in the C file's directory and cwd (e.g. bgfx.dll).
+        for dir in [c_path.parent(), std::env::current_dir().ok().as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for ent in rd.flatten() {
+                    let p = ent.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("dll") {
+                        if let Some(s) = p.to_str() {
+                            if !link_libs.iter().any(|x: &String| x == s) {
+                                link_libs.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        match crate::tcc::compile_c_to_path(
+            c_path,
+            lib_path,
+            crate::tcc::OutputKind::Dll,
+            false,
+            &link_libs,
+        ) {
+            Ok(()) if lib_path.exists() => return Ok(true),
+            Ok(()) => {}
+            Err(e) => {
+                return Err(RuntimeError::Message(format!(
+                    "failed to compile embedded C with TinyCC: {}",
+                    e
+                )));
             }
         }
     }
@@ -503,6 +553,25 @@ enum ArgSlot {
 }
 
 fn write_scalar(buf: &mut [u8], offset: usize, ty: &FfiType, v: &Value) -> RuntimeResult<()> {
+    // Uninitialized object fields are Null — treat as zero for POD packing.
+    let v = if matches!(v, Value::Null) {
+        match ty {
+            FfiType::Bool
+            | FfiType::I8
+            | FfiType::U8
+            | FfiType::I16
+            | FfiType::U16
+            | FfiType::I32
+            | FfiType::U32
+            | FfiType::I64
+            | FfiType::U64 => &Value::Int(0),
+            FfiType::F32 | FfiType::F64 => &Value::Float(0.0),
+            FfiType::Ptr | FfiType::CString | FfiType::StructPtr(_) => &Value::Null,
+            _ => v,
+        }
+    } else {
+        v
+    };
     let end = match ty {
         FfiType::Bool | FfiType::I8 | FfiType::U8 => offset + 1,
         FfiType::I16 | FfiType::U16 => offset + 2,
@@ -513,6 +582,10 @@ fn write_scalar(buf: &mut [u8], offset: usize, ty: &FfiType, v: &Value) -> Runti
             return Err(RuntimeError::Message(
                 "nested struct field packing requires Struct path".into(),
             ));
+        }
+        FfiType::StructPtr(_) => {
+            // Struct pointer fields are just pointers (8 bytes)
+            offset + 8
         }
     };
     if end > buf.len() {
@@ -534,7 +607,7 @@ fn write_scalar(buf: &mut [u8], offset: usize, ty: &FfiType, v: &Value) -> Runti
             buf[offset..offset + 4].copy_from_slice(&(v.as_float()? as f32).to_ne_bytes())
         }
         FfiType::F64 => buf[offset..offset + 8].copy_from_slice(&v.as_float()?.to_ne_bytes()),
-        FfiType::Ptr => {
+        FfiType::Ptr | FfiType::StructPtr(_) => {
             let p = match v {
                 Value::Ptr(p) => *p as u64,
                 Value::Null => 0,
@@ -620,6 +693,16 @@ fn read_scalar(buf: &[u8], offset: usize, ty: &FfiType) -> RuntimeResult<Value> 
         }
         FfiType::CString => Value::Null,
         FfiType::Struct(_) => Value::Null,
+        FfiType::StructPtr(_) => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(buf.get(offset..offset + 8).unwrap_or(&[0; 8]));
+            let p = u64::from_ne_bytes(b);
+            if p == 0 {
+                Value::Null
+            } else {
+                Value::Ptr(p as usize)
+            }
+        }
     })
 }
 
@@ -747,6 +830,12 @@ fn value_to_slot(
                 ArgSlot::U64(ptr)
             }
         }
+        FfiType::StructPtr(layout) => {
+            let blob = pack_struct(v, layout)?;
+            blobs.push(blob);
+            let ptr = blobs.last().unwrap().as_ptr() as u64;
+            ArgSlot::U64(ptr)
+        }
     })
 }
 
@@ -815,10 +904,16 @@ pub fn call(func: &FfiFunction, args: &[Value]) -> RuntimeResult<Value> {
                 pending.push((idx, fits));
                 scalar_slots.push(ArgSlot::U64(0)); // patched
             }
+            FfiType::StructPtr(layout) => {
+                let blob = pack_struct(a, layout)?;
+                let idx = blob_boxes.len();
+                blob_boxes.push(blob.into_boxed_slice());
+                pending.push((idx, false)); // always pointer
+                scalar_slots.push(ArgSlot::U64(0));
+            }
             other => {
                 let mut tmp_blobs = Vec::new();
                 scalar_slots.push(value_to_slot(a, other, &mut strings, &mut tmp_blobs)?);
-                // tmp_blobs unused for non-struct
             }
         }
     }
@@ -831,7 +926,7 @@ pub fn call(func: &FfiFunction, args: &[Value]) -> RuntimeResult<Value> {
     }
     let mut pend_i = 0usize;
     for ty in &func.params {
-        if matches!(ty, FfiType::Struct(_)) {
+        if matches!(ty, FfiType::Struct(_) | FfiType::StructPtr(_)) {
             let (bi, fits) = pending[pend_i];
             pend_i += 1;
             if fits {
@@ -964,6 +1059,28 @@ fn call_float(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
         }};
     }
 
+    if func.params.is_empty() && matches!(ret, FfiType::F64) {
+        let f = get_sym!(unsafe extern "C" fn() -> f64);
+        let r = unsafe { f() };
+        return Ok(Value::Float(r));
+    }
+    if func.params.is_empty() && matches!(ret, FfiType::F32) {
+        let f = get_sym!(unsafe extern "C" fn() -> f32);
+        let r = unsafe { f() };
+        return Ok(Value::Float(r as f64));
+    }
+    if func.params.len() == 1
+        && matches!(func.params[0], FfiType::F64)
+        && matches!(ret, FfiType::Void)
+    {
+        let x = match &slots[0] {
+            ArgSlot::F64(v) => *v,
+            _ => slot_as_i64(&slots[0]) as f64,
+        };
+        let f = get_sym!(unsafe extern "C" fn(f64));
+        unsafe { f(x) };
+        return Ok(Value::Null);
+    }
     if func.params.len() == 1
         && matches!(func.params[0], FfiType::F64)
         && matches!(ret, FfiType::F64)
@@ -1007,10 +1124,151 @@ fn call_float(func: &FfiFunction, slots: &[ArgSlot]) -> RuntimeResult<Value> {
         return Ok(Value::Float(r as f64));
     }
 
+    // void(f32,f32,f32,f32,u32) — e.g. platformer_draw_rect
+    if matches!(ret, FfiType::Void)
+        && func.params.len() == 5
+        && matches!(func.params[0], FfiType::F32)
+        && matches!(func.params[1], FfiType::F32)
+        && matches!(func.params[2], FfiType::F32)
+        && matches!(func.params[3], FfiType::F32)
+        && matches!(func.params[4], FfiType::U32 | FfiType::I32 | FfiType::U64 | FfiType::I64)
+    {
+        let f32_at = |i: usize| -> f32 {
+            match &slots[i] {
+                ArgSlot::F32(v) => *v,
+                ArgSlot::F64(v) => *v as f32,
+                _ => slot_as_i64(&slots[i]) as f32,
+            }
+        };
+        let u = slot_as_u64(&slots[4]) as u32;
+        let f = get_sym!(unsafe extern "C" fn(f32, f32, f32, f32, u32));
+        unsafe { f(f32_at(0), f32_at(1), f32_at(2), f32_at(3), u) };
+        return Ok(Value::Null);
+    }
+
+    // void(u16, u16, u32, f32, u8) — bgfx_set_view_clear
+    if matches!(ret, FfiType::Void)
+        && func.params.len() == 5
+        && is_intish(&func.params[0])
+        && is_intish(&func.params[1])
+        && is_intish(&func.params[2])
+        && matches!(func.params[3], FfiType::F32)
+        && is_intish(&func.params[4])
+    {
+        let a0 = slot_as_u64(&slots[0]) as u16;
+        let a1 = slot_as_u64(&slots[1]) as u16;
+        let a2 = slot_as_u64(&slots[2]) as u32;
+        let depth = match &slots[3] {
+            ArgSlot::F32(v) => *v,
+            ArgSlot::F64(v) => *v as f32,
+            _ => slot_as_i64(&slots[3]) as f32,
+        };
+        let a4 = slot_as_u64(&slots[4]) as u8;
+        let f = get_sym!(unsafe extern "C" fn(u16, u16, u32, f32, u8));
+        unsafe { f(a0, a1, a2, depth, a4) };
+        return Ok(Value::Null);
+    }
+
+    // Generic: void with ≤4 integer args then one f32 (common mixed Win64 pattern).
+    if matches!(ret, FfiType::Void) {
+        if let Some(fi) = func.params.iter().position(|t| matches!(t, FfiType::F32)) {
+            let all_rest_int = func
+                .params
+                .iter()
+                .enumerate()
+                .all(|(i, t)| i == fi || is_intish(t));
+            if all_rest_int && func.params.iter().filter(|t| t.is_float()).count() == 1 {
+                let f32_at = |i: usize| -> f32 {
+                    match &slots[i] {
+                        ArgSlot::F32(v) => *v,
+                        ArgSlot::F64(v) => *v as f32,
+                        _ => slot_as_i64(&slots[i]) as f32,
+                    }
+                };
+                match (func.params.len(), fi) {
+                    (1, 0) => {
+                        let f = get_sym!(unsafe extern "C" fn(f32));
+                        unsafe { f(f32_at(0)) };
+                        return Ok(Value::Null);
+                    }
+                    (2, 0) => {
+                        let f = get_sym!(unsafe extern "C" fn(f32, u64));
+                        unsafe { f(f32_at(0), slot_as_u64(&slots[1])) };
+                        return Ok(Value::Null);
+                    }
+                    (2, 1) => {
+                        let f = get_sym!(unsafe extern "C" fn(u64, f32));
+                        unsafe { f(slot_as_u64(&slots[0]), f32_at(1)) };
+                        return Ok(Value::Null);
+                    }
+                    (3, 0) => {
+                        let f = get_sym!(unsafe extern "C" fn(f32, u64, u64));
+                        unsafe { f(f32_at(0), slot_as_u64(&slots[1]), slot_as_u64(&slots[2])) };
+                        return Ok(Value::Null);
+                    }
+                    (3, 1) => {
+                        let f = get_sym!(unsafe extern "C" fn(u64, f32, u64));
+                        unsafe { f(slot_as_u64(&slots[0]), f32_at(1), slot_as_u64(&slots[2])) };
+                        return Ok(Value::Null);
+                    }
+                    (3, 2) => {
+                        let f = get_sym!(unsafe extern "C" fn(u64, u64, f32));
+                        unsafe { f(slot_as_u64(&slots[0]), slot_as_u64(&slots[1]), f32_at(2)) };
+                        return Ok(Value::Null);
+                    }
+                    (4, 3) => {
+                        let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, f32));
+                        unsafe {
+                            f(
+                                slot_as_u64(&slots[0]),
+                                slot_as_u64(&slots[1]),
+                                slot_as_u64(&slots[2]),
+                                f32_at(3),
+                            )
+                        };
+                        return Ok(Value::Null);
+                    }
+                    (5, 3) => {
+                        // already handled above for set_view_clear; keep u64 form as fallback
+                        let f = get_sym!(unsafe extern "C" fn(u64, u64, u64, f32, u64));
+                        unsafe {
+                            f(
+                                slot_as_u64(&slots[0]),
+                                slot_as_u64(&slots[1]),
+                                slot_as_u64(&slots[2]),
+                                f32_at(3),
+                                slot_as_u64(&slots[4]),
+                            )
+                        };
+                        return Ok(Value::Null);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     Err(RuntimeError::Message(format!(
         "FFI '{}': unsupported float signature",
         func.name
     )))
+}
+
+fn is_intish(t: &FfiType) -> bool {
+    matches!(
+        t,
+        FfiType::Bool
+            | FfiType::I8
+            | FfiType::U8
+            | FfiType::I16
+            | FfiType::U16
+            | FfiType::I32
+            | FfiType::U32
+            | FfiType::I64
+            | FfiType::U64
+            | FfiType::Ptr
+            | FfiType::CString
+    )
 }
 
 fn decode_return(ret: &FfiType, raw: u64) -> RuntimeResult<Value> {
@@ -1049,6 +1307,13 @@ fn decode_return(ret: &FfiType, raw: u64) -> RuntimeResult<Value> {
             buf[..n].copy_from_slice(&bytes[..n]);
             unpack_struct(&buf, layout)?
         }
+        FfiType::StructPtr(_) => {
+            if raw == 0 {
+                Value::Null
+            } else {
+                Value::Ptr(raw as usize)
+            }
+        }
     })
 }
 
@@ -1069,5 +1334,6 @@ pub fn c_type_name(ty: &FfiType) -> String {
         FfiType::Ptr => "void*".into(),
         FfiType::CString => "const char*".into(),
         FfiType::Struct(s) => s.name.clone(),
+        FfiType::StructPtr(s) => format!("{}*", s.name),
     }
 }

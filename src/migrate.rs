@@ -365,8 +365,6 @@ pub fn analyze_csproj(csproj: &Path) -> Result<AnalyzeReport, String> {
                 "ref struct",
                 "record ",
                 "required ",
-                "nameof(",
-                "nameof ",
                 "global using",
                 "file scoped",
             ] {
