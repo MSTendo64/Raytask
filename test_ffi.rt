@@ -1,0 +1,6 @@
+[DllImport: "fake.dll"]
+[include: "fake.h"]
+
+void Main() {
+    InitWindow(800, 600, "Hello world");
+}

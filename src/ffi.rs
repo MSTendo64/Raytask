@@ -487,6 +487,7 @@ fn compile_shared(c_path: &Path, lib_path: &Path) -> RuntimeResult<bool> {
             crate::tcc::OutputKind::Dll,
             false,
             &link_libs,
+            &[],
         ) {
             Ok(()) if lib_path.exists() => return Ok(true),
             Ok(()) => {}

@@ -577,6 +577,22 @@ pub fn build_aot_native(
         gc,
         freestanding: false,
     })
+    .set_source_dir(
+        &source.parent()
+            .and_then(|p| {
+                if p.as_os_str().is_empty() {
+                    std::env::current_dir().ok()
+                } else if p.is_absolute() {
+                    Some(p.to_path_buf())
+                } else {
+                    std::env::current_dir().ok().map(|cwd| cwd.join(p))
+                }
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            // Normalize: remove . components
+            .components()
+            .collect::<PathBuf>()
+    )
     .generate_with_ssa(program, &ssa)?;
     fs::write(&c_path, &c)?;
 
@@ -596,7 +612,38 @@ pub fn build_aot_native(
         .map(|p| p.to_path_buf())
         .unwrap_or(default_exe);
 
-    let link_libs = crate::codegen_c::collect_link_libs(program);
+    let mut link_libs = crate::codegen_c::collect_link_libs(program);
+    // Resolve relative link library paths (e.g. "raylib/lib/raylib.dll") to absolute
+    // paths based on the source file's directory.
+    // For .dll files, try the corresponding .lib (import library) first,
+    // which TCC can use for linking on Windows.
+    if let Some(parent) = source.parent() {
+        let parent = if parent.is_absolute() {
+            parent.to_path_buf()
+        } else {
+            std::env::current_dir().ok().map(|cwd| cwd.join(parent)).unwrap_or_else(|| parent.to_path_buf())
+        };
+        for i in 0..link_libs.len() {
+            let lib = &link_libs[i];
+            if lib.starts_with('<') || lib.starts_with('-') || Path::new(lib).is_absolute() {
+                continue;
+            }
+            let abs = parent.join(&**lib);
+            if abs.exists() {
+                link_libs[i] = abs.display().to_string();
+            } else if lib.ends_with(".dll") {
+                // Try the .lib import library instead.
+                let lib_path = Path::new(&**lib).with_extension("lib");
+                let abs_lib = parent.join(&lib_path);
+                if abs_lib.exists() {
+                    link_libs[i] = abs_lib.display().to_string();
+                } else {
+                    // Try the raw path relative to CWD.
+                    link_libs[i] = abs.display().to_string();
+                }
+            }
+        }
+    }
     let mut notes = vec![
         format!(
             "True AOT: SSA → C → native ({}) (no RTBC interpreter)",
@@ -609,8 +656,37 @@ pub fn build_aot_native(
         crate::Optimize::Size => notes.push("optimize=size".into()),
     }
 
-    match compile_native_c(&c_path, &exe, debug, &link_libs, triple, link_builtin) {
-        Ok(how) => notes.push(how),
+    // Include the source file's directory so relative #include paths work.
+    // Use absolute path for TCC to find headers from any C file location.
+    let include_dirs: Vec<PathBuf> = source
+        .parent()
+        .and_then(|p| {
+            if p.as_os_str().is_empty() {
+                std::env::current_dir().ok()
+            } else if p.is_absolute() {
+                Some(p.to_path_buf())
+            } else {
+                std::env::current_dir().ok().map(|cwd| cwd.join(p))
+            }
+        })
+        .into_iter()
+        .collect();
+
+    match compile_native_c(&c_path, &exe, debug, &link_libs, triple, link_builtin, &include_dirs) {
+        Ok(how) => {
+            notes.push(how);
+            // Copy referenced DLLs next to the executable so Windows can find them.
+            for lib in &link_libs {
+                if lib.ends_with(".dll") && Path::new(lib).is_file() {
+                    if let Some(dll_name) = Path::new(lib).file_name() {
+                        let dest = exe.with_file_name(dll_name);
+                        if std::fs::copy(lib, &dest).is_ok() {
+                            notes.push(format!("copied {} → {}", lib, dest.display()));
+                        }
+                    }
+                }
+            }
+        }
         Err(e) => {
             notes.push(format!("C toolchain failed ({e}); leaving {}", c_path.display()));
             fs::write(
@@ -674,6 +750,7 @@ pub fn compile_c_to_object(
             obj_path,
             crate::tcc::OutputKind::Obj,
             debug,
+            &[],
             &[],
         ) {
             Ok(()) => return Ok("object via embedded TCC".into()),
@@ -741,6 +818,7 @@ pub fn compile_native_c(
     link_libs: &[String],
     triple: crate::native_triple::NativeTriple,
     link_builtin: bool,
+    include_dirs: &[PathBuf],
 ) -> Result<String, String> {
     // Built-in linker path: .o → PE/ELF (freestanding / explicit --link-builtin).
     if link_builtin
@@ -782,7 +860,7 @@ pub fn compile_native_c(
     }
 
     if triple.matches_host() {
-        return compile_host_c(c_path, exe, debug, link_libs);
+        return compile_host_c(c_path, exe, debug, link_libs, include_dirs);
     }
 
     // Cross: clang -target <triple>
@@ -851,6 +929,7 @@ pub fn compile_host_c(
     exe: &Path,
     debug: bool,
     link_libs: &[String],
+    include_dirs: &[PathBuf],
 ) -> Result<String, String> {
     if let Some(parent) = exe.parent() {
         fs::create_dir_all(parent).ok();
@@ -861,12 +940,15 @@ pub fn compile_host_c(
         crate::tcc::OutputKind::Exe,
         debug,
         link_libs,
+        include_dirs,
     ) {
         Ok(()) => return Ok("linked with embedded TCC".into()),
-        Err(err) => {
-            let _ = err;
+        Err(_err) => {
+            // TCC failed — fall through to gcc/clang.
         }
     }
+
+    // Fallback to gcc/clang/cl.
 
     let out_str = c_path.display().to_string();
     let exe_str = exe.display().to_string();

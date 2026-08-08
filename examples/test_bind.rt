@@ -1,0 +1,8 @@
+import bstd.io;
+
+[DllImport: "test_bind.dll"]
+[bind: "examples/test_bind.h"]
+
+void Main() {
+    print("test");
+}

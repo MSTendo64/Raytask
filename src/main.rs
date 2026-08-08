@@ -319,6 +319,46 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             args: _,
         } => {
             let file = resolve_entry(file)?;
+
+            // Parse source FIRST, before any C header expansion.
+            // When FFI bind/include attributes are present, route through
+            // the true AOT path (SSA→C→TCC/gcc/clang) instead of the bytecode VM.
+            // The C header is never parsed — TCC handles it natively via #include.
+            let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {}", file.display(), e))?;
+            let defs = raytask::preprocess::default_defs(cfg!(debug_assertions));
+            let source = raytask::preprocess::preprocess(&source, &defs);
+            let program = raytask::resolve::resolve_program_with_stdlib(&source, Some(&file), !no_stdlib)?;
+
+            if has_ffi_bind(&program) {
+                println!(
+                    "{} {} — using native AOT (SSA→C→TCC) for FFI",
+                    "Running".cyan().bold(),
+                    file.display()
+                );
+                // Skip typecheck — TCC will check types when compiling the generated C.
+                // The FFI functions come from the C header (#include) so only TCC knows them.
+                let program = raytask::mono::monomorphize(program);
+                let result = raytask::targets::build_aot_native(
+                    &file,
+                    &program,
+                    Optimize::None,
+                    !no_gc,
+                    false, // debug
+                    None,
+                    raytask::native_triple::NativeTriple::host(),
+                    false,
+                )?;
+                let exe = result.exe;
+                let mut cmd = std::process::Command::new(&exe);
+                let status = cmd.status().map_err(|e| {
+                    format!("failed to run {}: {}", exe.display(), e)
+                })?;
+                if !status.success() {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                return Ok(());
+            }
+
             println!("{} {}", "Running".cyan().bold(), file.display());
             let mut gc = !no_gc;
             if Path::new("project.rtp").exists() && !no_gc {
@@ -775,6 +815,46 @@ fn extract_doc_comments(source: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Check whether the program uses FFI bind/include attributes
+/// that need native AOT compilation (TCC) instead of the bytecode VM.
+fn has_ffi_bind(program: &raytask::ast::Program) -> bool {
+    use raytask::ast::{Item, Member, Attribute};
+    fn is_ffi_attr(name: &str) -> bool {
+        let key = name.to_ascii_lowercase();
+        matches!(key.as_str(), "bind" | "include" | "cheader" | "dllimport" | "link" | "lib")
+    }
+    fn attrs_have_ffi(attrs: &[Attribute]) -> bool {
+        attrs.iter().any(|a| is_ffi_attr(&a.name))
+    }
+    fn any_member_ffi(members: &[Member]) -> bool {
+        members.iter().any(|m| {
+            if let Member::Method(f) = m {
+                attrs_have_ffi(&f.attributes)
+            } else {
+                false
+            }
+        })
+    }
+    fn walk(item: &Item) -> bool {
+        match item {
+            Item::Attribute(attr, inner) => {
+                if is_ffi_attr(&attr.name) {
+                    return true;
+                }
+                walk(inner)
+            }
+            Item::Namespace(ns) => ns.items.iter().any(walk),
+            Item::Function(f) => attrs_have_ffi(&f.attributes),
+            Item::Class(c) => any_member_ffi(&c.members),
+            Item::Struct(s) => attrs_have_ffi(&s.attributes) || any_member_ffi(&s.members),
+            Item::Interface(i) => any_member_ffi(&i.members),
+            Item::Union(u) => attrs_have_ffi(&u.attributes) || any_member_ffi(&u.members),
+            _ => false,
+        }
+    }
+    program.items.iter().any(walk)
 }
 
 fn resolve_entry(file: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {

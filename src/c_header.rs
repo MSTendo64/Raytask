@@ -36,10 +36,23 @@ pub struct CHeader {
     pub includes_resolved: Vec<PathBuf>,
 }
 
+/// Maximum total prototypes parsed across all includes.
+const MAX_HEADER_PROTOS: usize = 1024;
+/// Maximum loop iterations in a single parse_source_into call.
+const MAX_LOOP_ITERS: usize = 4096;
+
+fn check_header_limits(header: &CHeader) -> CompileResult<()> {
+    let items = header.prototypes.len() + header.structs.len() + header.constants.len();
+    if items > MAX_HEADER_PROTOS {
+        return Ok(()); // silently stop — enough items parsed
+    }
+    Ok(())
+}
+
 /// Parse a header file (and local `#include "..."` recursively).
 pub fn parse_header_file(path: &Path) -> CompileResult<CHeader> {
     let mut visited = HashSet::new();
-    let mut header = CHeader::default();
+    let mut header = CHeader::default(); 
     seed_builtins(&mut header.typedefs);
     parse_header_recursive(path, &mut header, &mut visited, 0)?;
     Ok(header)
@@ -119,12 +132,22 @@ fn parse_header_recursive(
     if !visited.insert(canon.clone()) {
         return Ok(());
     }
+
     let source = std::fs::read_to_string(path).map_err(|e| CompileError::Io {
         message: format!("cannot read C header '{}': {e}", path.display()),
     })?;
+    // Skip files exceeding 512 KiB of raw source (allow large single headers like raylib.h)
+    if source.len() > 512 * 1024 {
+        return Ok(());
+    }
+    if header.includes_resolved.len() > 8 {
+        return Ok(()); // silently stop — too many includes
+    }
     header.includes_resolved.push(path.to_path_buf());
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    parse_source_into(&source, base, header, visited, depth)
+    parse_source_into(&source, base, header, visited, depth)?;
+    check_header_limits(header)?;
+    Ok(())
 }
 
 fn parse_source_into(
@@ -135,9 +158,18 @@ fn parse_source_into(
     depth: usize,
 ) -> CompileResult<()> {
     let text = strip_comments(source);
+    // Individual source after comment strip must fit within reasonable bounds
+    if text.len() > 512 * 1024 {
+        return Ok(()); // silently skip huge files
+    }
     let mut i = 0;
     let bytes = text.as_bytes();
+    let mut loop_iters = 0usize;
     while i < bytes.len() {
+        if loop_iters >= MAX_LOOP_ITERS {
+            return Ok(()); // too many declarations — stop gracefully
+        }
+        loop_iters += 1;
         skip_ws(&text, &mut i);
         if i >= bytes.len() {
             break;
@@ -235,6 +267,31 @@ fn parse_source_into(
         if starts_with_word(&text, i, "extern") {
             i += "extern".len();
             skip_ws(&text, &mut i);
+            // extern "C" { ... } — skip the entire linkage block
+            let b = text.as_bytes();
+            if i < b.len() && b[i] == b'"' {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += 1;
+                }
+                if i < b.len() {
+                    i += 1;
+                }
+                skip_ws(&text, &mut i);
+                if i < b.len() && b[i] == b'{' {
+                    i += 1;
+                    let mut depth = 1u32;
+                    while i < b.len() && depth > 0 {
+                        if b[i] == b'{' {
+                            depth += 1;
+                        } else if b[i] == b'}' {
+                            depth -= 1;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
             // fall through to prototype
         }
 
@@ -247,6 +304,10 @@ fn parse_source_into(
         if let Some(proto) = try_parse_prototype(&text, &mut i, &header.typedefs) {
             if !header.prototypes.iter().any(|p| p.name == proto.name) {
                 header.prototypes.push(proto);
+                // Check limits periodically
+                if header.prototypes.len() + header.structs.len() > MAX_HEADER_PROTOS {
+                    return Ok(()); // silently stop — enough declarations parsed
+                }
             }
             continue;
         }
@@ -1379,6 +1440,236 @@ fn parse_c_type(
     base
 }
 
+// ── .rtbnd cache ────────────────────────────────────────────────────────
+
+/// Cache file extension: `<header>.rtbnd`
+
+fn cache_path(header: &Path) -> PathBuf {
+    let mut s = header.as_os_str().to_os_string();
+    s.push(".rtbnd");
+    PathBuf::from(s)
+}
+
+fn write_ffi_type(buf: &mut Vec<u8>, t: &FfiType) {
+    match t {
+        FfiType::Void => buf.push(0),
+        FfiType::Bool => buf.push(1),
+        FfiType::I8 => buf.push(2),
+        FfiType::I16 => buf.push(3),
+        FfiType::I32 => buf.push(4),
+        FfiType::I64 => buf.push(5),
+        FfiType::U8 => buf.push(6),
+        FfiType::U16 => buf.push(7),
+        FfiType::U32 => buf.push(8),
+        FfiType::U64 => buf.push(9),
+        FfiType::F32 => buf.push(10),
+        FfiType::F64 => buf.push(11),
+        FfiType::Ptr => buf.push(12),
+        FfiType::CString => buf.push(13),
+        FfiType::Struct(s) => {
+            buf.push(14);
+            let b = s.name.as_bytes();
+            buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+        FfiType::StructPtr(s) => {
+            buf.push(15);
+            let b = s.name.as_bytes();
+            buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+    }
+}
+
+fn read_ffi_type(data: &[u8], pos: &mut usize) -> Option<FfiType> {
+    if *pos >= data.len() { return None; }
+    let disc = data[*pos]; *pos += 1;
+    match disc {
+        0 => Some(FfiType::Void),
+        1 => Some(FfiType::Bool),
+        2 => Some(FfiType::I8),
+        3 => Some(FfiType::I16),
+        4 => Some(FfiType::I32),
+        5 => Some(FfiType::I64),
+        6 => Some(FfiType::U8),
+        7 => Some(FfiType::U16),
+        8 => Some(FfiType::U32),
+        9 => Some(FfiType::U64),
+        10 => Some(FfiType::F32),
+        11 => Some(FfiType::F64),
+        12 => Some(FfiType::Ptr),
+        13 => Some(FfiType::CString),
+        14 | 15 => {
+            if *pos + 2 > data.len() { return None; }
+            let len = u16::from_le_bytes([data[*pos], data[*pos+1]]) as usize;
+            *pos += 2;
+            if *pos + len > data.len() { return None; }
+            let name = String::from_utf8_lossy(&data[*pos..*pos+len]).into_owned();
+            *pos += len;
+            let layout = crate::ffi::FfiStructLayout { name, size: 0, align: 0, fields: vec![], packed: false };
+            if disc == 14 { Some(FfiType::Struct(layout)) } else { Some(FfiType::StructPtr(layout)) }
+        }
+        _ => None,
+    }
+}
+
+fn write_str(buf: &mut Vec<u8>, s: &str) {
+    let b = s.as_bytes();
+    buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+    buf.extend_from_slice(b);
+}
+
+fn read_str(data: &[u8], pos: &mut usize) -> Option<String> {
+    if *pos + 2 > data.len() { return None; }
+    let len = u16::from_le_bytes([data[*pos], data[*pos+1]]) as usize;
+    *pos += 2;
+    if *pos + len > data.len() { return None; }
+    let s = String::from_utf8_lossy(&data[*pos..*pos+len]).into_owned();
+    *pos += len;
+    Some(s)
+}
+
+/// Serialize only prototypes + constants to binary cache.
+/// Structs are excluded (they're few and complex to round-trip through ast::StructDecl).
+pub fn write_bind_cache(header: &CHeader, header_path: &Path) -> std::io::Result<()> {
+    let path = cache_path(header_path);
+    let mut buf: Vec<u8> = Vec::with_capacity(65536);
+
+    // Magic + version
+    buf.extend_from_slice(b"RTBD");
+    buf.extend_from_slice(&1u32.to_le_bytes());
+
+    // Prototypes
+    buf.extend_from_slice(&(header.prototypes.len() as u16).to_le_bytes());
+    for p in &header.prototypes {
+        write_str(&mut buf, &p.name);
+        write_ffi_type(&mut buf, &p.ret);
+        buf.push(p.params.len() as u8);
+        for param in &p.params {
+            write_ffi_type(&mut buf, param);
+        }
+    }
+
+    // Constants
+    buf.extend_from_slice(&(header.constants.len() as u16).to_le_bytes());
+    for (name, val) in &header.constants {
+        write_str(&mut buf, name);
+        buf.extend_from_slice(&val.to_le_bytes());
+    }
+
+    // Empty structs section (0)
+    buf.extend_from_slice(&0u16.to_le_bytes());
+
+    std::fs::write(&path, &buf)?;
+    Ok(())
+}
+
+/// Try to read a .rtbnd cache. Returns `None` if cache is missing or corrupt.
+pub fn read_bind_cache(header_path: &Path) -> Option<CHeader> {
+    let path = cache_path(header_path);
+    // Cache must be newer than the header file
+    let hdr_meta = std::fs::metadata(header_path).ok()?;
+    let cache_meta = std::fs::metadata(&path).ok()?;
+    if cache_meta.modified().ok()? < hdr_meta.modified().ok()? {
+        return None; // header changed since cache was created
+    }
+
+    let data = std::fs::read(&path).ok()?;
+    if data.len() < 10 { return None; }
+    if &data[..4] != b"RTBD" { return None; }
+    let _version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    let mut pos = 8usize;
+
+    // Prototypes
+    if pos + 2 > data.len() { return None; }
+    let nprotos = u16::from_le_bytes([data[pos], data[pos+1]]) as usize;
+    pos += 2;
+    let mut prototypes = Vec::with_capacity(nprotos.min(1024));
+    for _ in 0..nprotos {
+        let name = read_str(&data, &mut pos)?;
+        let ret = read_ffi_type(&data, &mut pos)?;
+        if pos >= data.len() { return None; }
+        let nparams = data[pos] as usize; pos += 1;
+        let mut params = Vec::with_capacity(nparams);
+        for _ in 0..nparams {
+            params.push(read_ffi_type(&data, &mut pos)?);
+        }
+        prototypes.push(CPrototype { name, params, ret, param_names: vec![] });
+    }
+
+    // Constants
+    if pos + 2 > data.len() { return None; }
+    let nconsts = u16::from_le_bytes([data[pos], data[pos+1]]) as usize;
+    pos += 2;
+    let mut constants = HashMap::with_capacity(nconsts);
+    for _ in 0..nconsts {
+        let name = read_str(&data, &mut pos)?;
+        if pos + 8 > data.len() { return None; }
+        let val = i64::from_le_bytes([
+            data[pos], data[pos+1], data[pos+2], data[pos+3],
+            data[pos+4], data[pos+5], data[pos+6], data[pos+7],
+        ]);
+        pos += 8;
+        constants.insert(name, val);
+    }
+
+    Some(CHeader {
+        prototypes,
+        constants,
+        structs: vec![],
+        typedefs: HashMap::new(),
+        includes_resolved: vec![],
+    })
+}
+
+/// Read cache, check which names are missing, parse the header to fill gaps,
+/// then write back the merged cache.
+pub fn parse_header_with_cache(header_path: &Path, needed_names: &HashSet<String>) -> CompileResult<CHeader> {
+    // 1. Try cache first
+    let cached = read_bind_cache(header_path);
+
+    // 2. Check coverage
+    let cache_misses: Vec<String> = if let Some(ref c) = cached {
+        needed_names.iter()
+            .filter(|n| !c.prototypes.iter().any(|p| &p.name == *n) && !c.constants.contains_key(*n))
+            .cloned()
+            .collect()
+    } else {
+        needed_names.iter().cloned().collect()
+    };
+
+    // 3. If cache covers everything, return it
+    if cache_misses.is_empty() && cached.is_some() {
+        return Ok(cached.unwrap());
+    }
+
+    // 4. Parse header (with limits)
+    let fresh = parse_header_file(header_path)?;
+
+    // 5. Merge: keep all fresh structs, merge prototypes/constants
+    let merged = if let Some(mut c) = cached {
+        // Add fresh prototypes not in cache
+        for p in &fresh.prototypes {
+            if !c.prototypes.iter().any(|cp| cp.name == p.name) {
+                c.prototypes.push(p.clone());
+            }
+        }
+        for (k, v) in &fresh.constants {
+            c.constants.entry(k.clone()).or_insert(*v);
+        }
+        // structs always from fresh parse
+        c.structs = fresh.structs;
+        c
+    } else {
+        fresh
+    };
+
+    // 6. Write cache
+    let _ = write_bind_cache(&merged, header_path);
+
+    Ok(merged)
+}
+
 /// Emit RayTask-facing FFI decls text for documentation / `raytask bind`.
 pub fn prototypes_to_raytask(lib: &str, protos: &[CPrototype]) -> String {
     let mut out = format!("[DllImport: \"{}\"]\n", lib);
@@ -1421,7 +1712,6 @@ fn ffi_type_to_rt(t: &FfiType) -> String {
     }
 }
 
-/// Resolve a header path relative to a source file / working dir.
 pub fn resolve_header(name: &str, from_file: Option<&Path>) -> PathBuf {
     let p = PathBuf::from(name);
     if p.is_file() {

@@ -90,6 +90,39 @@ fn load_import(
         return Ok(());
     };
 
+    // If the resolved path is a directory (@-import), load all .rt files
+    if path.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(&path)
+            .map_err(|e| CompileError::Io {
+                message: format!("cannot read directory '{}': {}", path.display(), e),
+            })?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "rt"))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in &entries {
+            let file_path = entry.path();
+            let file_key = file_path.display().to_string();
+            if loaded.contains(&file_key) {
+                continue;
+            }
+            loaded.insert(file_key.clone());
+            let source = std::fs::read_to_string(&file_path).map_err(|e| CompileError::Io {
+                message: format!("cannot read import '{}': {}", file_path.display(), e),
+            })?;
+            let dep_dir = file_path.parent().unwrap_or(base_dir);
+            let dep = parse_str(&source)?;
+            resolve_imports(&dep, dep_dir, loaded, out, stdlib_enabled)?;
+            for item in dep.items {
+                match &item {
+                    Item::Import(_) => {}
+                    _ => out.push(item),
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let source = std::fs::read_to_string(&path).map_err(|e| CompileError::Io {
         message: format!("cannot read import '{}': {}", path.display(), e),
     })?;
@@ -111,6 +144,29 @@ fn resolve_path(
     base_dir: &Path,
     stdlib_enabled: bool,
 ) -> CompileResult<Option<PathBuf>> {
+    // @-prefixed absolute path: import @C:/path/to/src or import @"C:/path"
+    if import_path.starts_with('@') {
+        let raw = &import_path[1..];
+        let p = PathBuf::from(raw);
+        // Try as a directory (import directory → all .rt files)
+        if p.is_dir() {
+            return Ok(Some(p));
+        }
+        // Try as a file directly
+        if p.is_file() {
+            return Ok(Some(p));
+        }
+        // Try with .rt extension
+        let with_ext = PathBuf::from(format!("{}.rt", raw));
+        if with_ext.is_file() {
+            return Ok(Some(with_ext));
+        }
+        return Err(CompileError::resolve(
+            format!("cannot resolve import '{}'", import_path),
+            crate::span::Span::default(),
+        ));
+    }
+
     // bstd.* is provided by VM natives; `.rt` stubs are API docs only.
     if import_path.starts_with("bstd.") || import_path == "bstd" {
         if stdlib_enabled {

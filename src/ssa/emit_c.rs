@@ -187,8 +187,9 @@ fn emit_inst(
                     c_func_name(name)
                 );
             } else {
-                // Match AST `const` / global symbols (no g_ prefix).
-                let _ = writeln!(s, "    {} = {};", v(inst.id), sanitize_global(name));
+                // FFI external function — no C variable exists.
+                // The Call instruction will handle it directly.
+                let _ = writeln!(s, "    {} = 0; /* FFI extern {} */", v(inst.id), name);
             }
         }
         InstKind::SetGlobal { index, value } | InstKind::DefineGlobal { index, value } => {
@@ -469,7 +470,7 @@ fn function_returns_value(func: &SsaFunction) -> bool {
 fn native_c_name(id: usize) -> Option<&'static str> {
     Some(match id {
         ids::PRINT => "print_i64",
-        ids::WRITE => "write",
+        ids::WRITE => "rt_write",
         ids::SLEEP => "rt_sleep",
         ids::MMIO_READ32 => "MmioRead32",
         ids::MMIO_WRITE32 => "MmioWrite32",
@@ -484,7 +485,7 @@ fn native_c_name(id: usize) -> Option<&'static str> {
 fn native_c_name_for_global(name: &str) -> Option<&'static str> {
     match name {
         "print" => Some("print_i64"),
-        "write" => Some("write"),
+        "write" => Some("rt_write"),
         "sleep" => Some("rt_sleep"),
         "MmioRead32" => Some("MmioRead32"),
         "MmioWrite32" => Some("MmioWrite32"),

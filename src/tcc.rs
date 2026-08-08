@@ -252,6 +252,7 @@ pub fn compile_c_to_path(
     kind: OutputKind,
     debug: bool,
     link_libs: &[String],
+    include_dirs: &[PathBuf],
 ) -> Result<(), String> {
     let tcc = TinyCc::new()?;
     tcc.set_output_kind(kind)?;
@@ -265,6 +266,11 @@ pub fn compile_c_to_path(
         let _ = tcc.set_options("-O0");
     } else {
         let _ = tcc.set_options("-O2");
+    }
+    // Use add_include_path with the raw (non-canonicalized) path.
+    // canonicalize() adds \\?\ prefix on Windows which TCC can't handle.
+    for inc in include_dirs {
+        let _ = tcc.add_include_path(inc);
     }
     for lib in link_libs {
         if lib.ends_with(".c") || lib.ends_with(".o") || lib.ends_with(".obj") {

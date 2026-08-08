@@ -248,7 +248,26 @@ impl Parser {
     fn parse_import(&mut self) -> CompileResult<ImportDecl> {
         let start = self.current().span;
         self.expect(TokenKind::Import, "expected 'import'")?;
+
+        // Check for @-prefixed absolute path: import @C:/path/to/src or import @"C:/path"
+        let at_prefix = self.match_kind(&[TokenKind::At]);
+
         let path = match &self.current().kind {
+            // @"..." — raw string literal → @-path
+            TokenKind::RawStringLit(s) => {
+                let s = s.clone();
+                self.advance();
+                format!("@{}", s)
+            }
+            TokenKind::Ident(_) if at_prefix => {
+                // @ followed by ident — consume until semicolon/EOL as raw path
+                let mut segs = Vec::new();
+                while !self.check(&TokenKind::Semicolon) && !self.check(&TokenKind::Eof) {
+                    segs.push(self.current().lexeme.clone());
+                    self.advance();
+                }
+                format!("@{}", segs.concat())
+            }
             TokenKind::Ident(_) => {
                 let mut parts = Vec::new();
                 let (p, _) = self.expect_ident()?;
@@ -262,7 +281,20 @@ impl Parser {
             TokenKind::StringLit(s) => {
                 let s = s.clone();
                 self.advance();
-                s
+                if at_prefix {
+                    format!("@{}", s)
+                } else {
+                    s
+                }
+            }
+            _ if at_prefix => {
+                // @ followed by something else — consume remaining as path
+                let mut segs = Vec::new();
+                while !self.check(&TokenKind::Semicolon) && !self.check(&TokenKind::Eof) {
+                    segs.push(self.current().lexeme.clone());
+                    self.advance();
+                }
+                format!("@{}", segs.concat())
             }
             _ => {
                 return Err(CompileError::syntax(

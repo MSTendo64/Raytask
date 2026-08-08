@@ -132,3 +132,4 @@ fn run_header_bind_example() {
     }
     run_file_with(path, &RunOptions::default()).unwrap();
 }
+

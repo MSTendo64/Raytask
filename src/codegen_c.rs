@@ -4,6 +4,7 @@ use crate::ast::*;
 use crate::error::CompileResult;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeProfile {
@@ -33,6 +34,8 @@ impl Default for CodegenOptions {
 pub struct CCodegen {
     out: String,
     indent: usize,
+    /// Directory of the source file for resolving relative include paths.
+    source_dir: Option<PathBuf>,
     /// Class / struct type names (heap objects → pointers in C).
     types: HashSet<String>,
     /// `[repr: "C"]` / packed / aligned structs and unions — by-value C ABI.
@@ -61,6 +64,7 @@ impl CCodegen {
         Self {
             out: String::new(),
             indent: 0,
+            source_dir: None,
             types: HashSet::new(),
             pod_types: HashSet::new(),
             var_types: HashMap::new(),
@@ -72,6 +76,11 @@ impl CCodegen {
             ssa_bodies: false,
             ssa_fn_names: HashSet::new(),
         }
+    }
+
+    pub fn set_source_dir(mut self, dir: &Path) -> Self {
+        self.source_dir = Some(dir.to_path_buf());
+        self
     }
 
     /// Emit freestanding/host C with function bodies lowered from SSA.
@@ -107,7 +116,7 @@ impl CCodegen {
         self.emit_includes();
         let mut seen_inc = std::collections::HashSet::new();
         for item in &program.items {
-            collect_ffi_headers(item, &mut self.out, &mut seen_inc);
+            collect_ffi_headers(item, &mut self.out, &mut seen_inc, self.source_dir.as_deref());
         }
         self.writeln("");
         self.emit_runtime();
@@ -196,7 +205,7 @@ impl CCodegen {
         self.emit_includes();
         let mut seen_inc = std::collections::HashSet::new();
         for item in &program.items {
-            collect_ffi_headers(item, &mut self.out, &mut seen_inc);
+            collect_ffi_headers(item, &mut self.out, &mut seen_inc, self.source_dir.as_deref());
         }
         self.writeln("");
         self.emit_runtime();
@@ -245,6 +254,8 @@ impl CCodegen {
         self.writeln("#include <ctype.h>");
         if self.opts.profile == RuntimeProfile::Host {
             self.writeln("#ifdef _WIN32");
+            self.writeln("#define WIN32_LEAN_AND_MEAN");
+            self.writeln("#define NOGDI   /* avoid Rectangle conflict with raylib & similar */");
             self.writeln("#include <windows.h>");
             self.writeln("#else");
             self.writeln("#include <unistd.h>");
@@ -260,7 +271,7 @@ impl CCodegen {
 
         if freestanding {
             self.writeln("static void print(const char* s) { (void)s; /* no console */ }");
-            self.writeln("static void write(const char* s) { (void)s; }");
+            self.writeln("static void rt_write(const char* s) { (void)s; }");
             self.writeln("static void print_i64(int64_t n) { (void)n; }");
             self.writeln("static void print_f64(double n) { (void)n; }");
             self.writeln("static void print_bool(bool b) { (void)b; }");
@@ -307,7 +318,7 @@ impl CCodegen {
             self.writeln("static bool IsFreestanding(void) { return true; }");
         } else {
             self.writeln("static void print(const char* s) { puts(s ? s : \"null\"); }");
-            self.writeln("static void write(const char* s) { fputs(s ? s : \"null\", stdout); }");
+            self.writeln("static void rt_write(const char* s) { fputs(s ? s : \"null\", stdout); }");
             self.writeln("static void print_i64(int64_t n) { printf(\"%lld\\n\", (long long)n); }");
             self.writeln("static void print_f64(double n) { printf(\"%g\\n\", n); }");
             self.writeln("static void print_bool(bool b) { puts(b ? \"true\" : \"false\"); }");
@@ -1685,14 +1696,37 @@ fn collect_ffi_headers(
     item: &Item,
     out: &mut String,
     seen: &mut std::collections::HashSet<String>,
+    source_dir: Option<&Path>,
 ) {
     match item {
         Item::Attribute(attr, inner) => {
-            if attr.name.eq_ignore_ascii_case("include") {
+            let key = attr.name.to_ascii_lowercase();
+            if matches!(key.as_str(), "include" | "bind" | "cheader") {
                 if let Some(h) = crate::ffi::attr_string(attr) {
                     if seen.insert(h.clone()) {
                         if h.starts_with('<') {
                             out.push_str(&format!("#include {}\n", h));
+                        } else if let Some(dir) = source_dir {
+                            // Inline the header content directly into the generated C.
+                            // This bypasses TCC's unreliable include-path resolution.
+                            let resolved = dir.join(&h);
+                            match std::fs::read_to_string(&resolved) {
+                                Ok(content) => {
+                                    out.push_str(&format!(
+                                        "/* --- begin {} --- */\n",
+                                        resolved.display()
+                                    ));
+                                    out.push_str(&content);
+                                    out.push_str(&format!(
+                                        "\n/* --- end {} --- */\n",
+                                        resolved.display()
+                                    ));
+                                }
+                                Err(_) => {
+                                    // Fall back to #include directive.
+                                    out.push_str(&format!("#include \"{}\"\n", h));
+                                }
+                            }
                         } else {
                             out.push_str(&format!("#include \"{}\"\n", h));
                         }
@@ -1705,11 +1739,11 @@ fn collect_ffi_headers(
             ) {
                 // embedded C is emitted later in emit_item to keep order with functions
             }
-            collect_ffi_headers(inner, out, seen);
+            collect_ffi_headers(inner, out, seen, source_dir);
         }
         Item::Namespace(ns) => {
             for i in &ns.items {
-                collect_ffi_headers(i, out, seen);
+                collect_ffi_headers(i, out, seen, source_dir);
             }
         }
         _ => {}
