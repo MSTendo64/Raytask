@@ -1,0 +1,41 @@
+{
+  "iconDefinitions": {
+    "_file": {
+      "iconPath": "./rt-file.svg"
+    },
+    "_folder": {
+      "iconPath": "./rt-folder.svg"
+    },
+    "_folder_open": {
+      "iconPath": "./rt-folder-open.svg"
+    }
+  },
+  "file": "_file",
+  "folder": "_folder",
+  "folderExpanded": "_folder_open",
+  "folderNames": {},
+  "folderNamesExpanded": {},
+  "fileExtensions": {
+    "rt": "_file"
+  },
+  "fileNames": {
+    "project.rtp": "_file"
+  },
+  "languageIds": {
+    "raytask": "_file"
+  },
+  "light": {
+    "file": "_file",
+    "folder": "_folder",
+    "folderExpanded": "_folder_open",
+    "fileExtensions": {
+      "rt": "_file"
+    },
+    "fileNames": {
+      "project.rtp": "_file"
+    },
+    "languageIds": {
+      "raytask": "_file"
+    }
+  }
+}

@@ -58,6 +58,13 @@
         }
       }
     ],
+    "iconThemes": [
+      {
+        "id": "raytask-icons",
+        "label": "RayTask Icons",
+        "path": "./media/raytask-icon-theme.json"
+      }
+    ],
     "grammars": [
       {
         "language": "raytask",
