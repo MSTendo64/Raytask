@@ -300,9 +300,10 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, value: Value) -> u16 {
-        // dedup simple constants
+        // dedup simple constants — must be the same variant to avoid float<->int confusion
+        use std::mem::discriminant;
         for (i, c) in self.constants.iter().enumerate() {
-            if c == &value {
+            if discriminant(c) == discriminant(&value) && c == &value {
                 return i as u16;
             }
         }

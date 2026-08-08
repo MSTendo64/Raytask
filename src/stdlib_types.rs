@@ -433,6 +433,11 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
         method("FromMilliseconds", vec![("ms", Ty::Float)], Ty::Named("TimeSpan".into()), true),
     );
     ts.methods.insert(
+        "FromMs".into(),
+        method("FromMs", vec![("ms", Ty::Float)], Ty::Named("TimeSpan".into()), true),
+    );
+    ts.properties.insert("Zero".into(), Ty::Named("TimeSpan".into()));
+    ts.methods.insert(
         "ToString".into(),
         method("ToString", vec![], Ty::String, false),
     );

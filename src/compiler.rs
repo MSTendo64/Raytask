@@ -1604,10 +1604,13 @@ impl Compiler {
                         self.chunk()
                             .emit_constant(Value::String(exty.name.clone().into()), span.line);
                         self.chunk().emit_op(Op::StringStartsWith, span.line);
+                        // JumpIfFalse peeks at the bool (doesn't pop), so the bool stays on stack.
                         let no_match = self.chunk().emit_jump(Op::JumpIfFalse, span.line);
                         skip_body_jumps.push(no_match);
+                        // Match path: pop the leftover bool from JumpIfFalse's peek
+                        self.chunk().emit_op(Op::Pop, span.line);
                     }
-                    // Bind exception to local
+                    // Bind exception to local (stack has [ex] at this point)
                     if let Some(name) = &catch.name {
                         self.add_local(name);
                         let slot = (self.locals.len() - 1) as u8;
@@ -1622,9 +1625,12 @@ impl Compiler {
                     let skip_rest = self.chunk().emit_jump(Op::Jump, span.line);
                     done_jumps.push(skip_rest);
 
-                    // Patch the "no match" jump for THIS catch to point here (next handler)
+                    // For the no-match path: patch the JumpIfFalse to point to a Pop
+                    // that cleans up the leftover bool (JumpIfFalse only peeks, doesn't pop).
+                    // IMPORTANT: patch BEFORE emitting the Pop so the target IS the Pop.
                     if i < skip_body_jumps.len() {
                         self.chunk().patch_jump(skip_body_jumps[i]);
+                        self.chunk().emit_op(Op::Pop, span.line);
                     }
                 }
 
