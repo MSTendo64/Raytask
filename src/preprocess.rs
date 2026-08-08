@@ -2,10 +2,15 @@
 
 use std::collections::HashSet;
 
+struct IfState {
+    parent_emitting: bool,
+    branch_taken: bool,
+}
+
 /// Expand preprocessor directives before lexing.
 pub fn preprocess(source: &str, defs: &HashSet<String>) -> String {
     let mut out = String::new();
-    let mut stack: Vec<bool> = Vec::new(); // active branch?
+    let mut stack: Vec<IfState> = Vec::new();
     let mut emitting = true;
 
     for line in source.lines() {
@@ -14,27 +19,46 @@ pub fn preprocess(source: &str, defs: &HashSet<String>) -> String {
             let rest = rest.trim_start();
             if rest.starts_with("if ") || rest.starts_with("IF ") {
                 let cond = rest[3..].trim();
-                let active = eval_cond(cond, defs);
-                stack.push(emitting);
-                emitting = emitting && active;
-                continue;
-            }
-            if rest.eq_ignore_ascii_case("else") {
-                if let Some(parent) = stack.last().copied() {
-                    // Flip within parent
-                    emitting = parent && !emitting;
-                }
+                let active = emitting && eval_cond(cond, defs);
+                stack.push(IfState {
+                    parent_emitting: emitting,
+                    branch_taken: active,
+                });
+                emitting = active;
                 continue;
             }
             if rest.starts_with("elif ") || rest.starts_with("ELIF ") {
                 let cond = rest[5..].trim();
-                if let Some(parent) = stack.last().copied() {
-                    emitting = parent && eval_cond(cond, defs);
+                if let Some(state) = stack.last() {
+                    if state.parent_emitting && !state.branch_taken {
+                        let active = eval_cond(cond, defs);
+                        if let Some(state) = stack.last_mut() {
+                            state.branch_taken = active;
+                        }
+                        emitting = active;
+                    } else {
+                        emitting = false;
+                    }
+                }
+                continue;
+            }
+            if rest.eq_ignore_ascii_case("else") {
+                if let Some(state) = stack.last() {
+                    if state.parent_emitting && !state.branch_taken {
+                        emitting = true;
+                        if let Some(state) = stack.last_mut() {
+                            state.branch_taken = true;
+                        }
+                    } else {
+                        emitting = false;
+                    }
                 }
                 continue;
             }
             if rest.eq_ignore_ascii_case("endif") {
-                emitting = stack.pop().unwrap_or(true);
+                if let Some(state) = stack.pop() {
+                    emitting = state.parent_emitting;
+                }
                 continue;
             }
             if rest.starts_with("pragma ") {

@@ -475,6 +475,12 @@ impl<'a> Lexer<'a> {
                 }
             }
             let span = self.make_span(start, line, col);
+            if hex.is_empty() {
+                return Err(CompileError::syntax(
+                    "expected hex digits after '0x'",
+                    span,
+                ));
+            }
             let value = u64::from_str_radix(&hex, 16).map_err(|_| {
                 CompileError::syntax("invalid hex literal", span)
             })?;
@@ -519,42 +525,56 @@ impl<'a> Lexer<'a> {
             if matches!(self.peek(), Some('+') | Some('-')) {
                 exp.push(self.advance().unwrap());
             }
+            let mut has_digit = false;
             while let Some(c) = self.peek() {
                 if c.is_ascii_digit() {
                     exp.push(c);
                     self.advance();
+                    has_digit = true;
                 } else {
                     break;
                 }
+            }
+            if !has_digit {
+                return Err(CompileError::syntax(
+                    "expected exponent digits",
+                    self.make_span(start, line, col),
+                ));
             }
             frac.push_str(&exp);
         }
 
         let span = self.make_span(start, line, col);
-        let suffix = self.peek();
 
-        if suffix == Some('f') || suffix == Some('F') {
-            self.advance();
-            let text = if frac.is_empty() {
+        if is_float {
+            // Build the full float text for parsing
+            let text = if !frac.is_empty() && !frac.starts_with('e') && !frac.starts_with('E') {
+                format!("{}.{}", int_part, frac)
+            } else if !frac.is_empty() {
+                format!("{}{}", int_part, frac)
+            } else {
                 int_part.clone()
-            } else {
-                format!("{}.{}", int_part, frac)
             };
+            // Check for suffix
+            if matches!(self.peek(), Some('f') | Some('F')) {
+                self.advance();
+                let v: f64 = text.parse().map_err(|_| {
+                    CompileError::syntax("invalid float literal", span)
+                })?;
+                return Ok(Token::new(TokenKind::FloatLit(v), span, format!("{}f", text)));
+            }
+            if matches!(self.peek(), Some('m') | Some('M')) {
+                self.advance();
+                return Ok(Token::new(TokenKind::DecimalLit(text.clone()), span, format!("{}m", text)));
+            }
             let v: f64 = text.parse().map_err(|_| {
-                CompileError::syntax("invalid float literal", span)
+                CompileError::syntax(format!("invalid float literal '{}'", text), span)
             })?;
-            return Ok(Token::new(TokenKind::FloatLit(v), span, format!("{}f", text)));
+            return Ok(Token::new(TokenKind::FloatLit(v), span, text));
         }
 
-        if suffix == Some('m') || suffix == Some('M') {
-            self.advance();
-            let text = if frac.is_empty() {
-                int_part
-            } else {
-                format!("{}.{}", int_part, frac)
-            };
-            return Ok(Token::new(TokenKind::DecimalLit(text.clone()), span, format!("{}m", text)));
-        }
+        // Integer suffix handling
+        let suffix = self.peek();
 
         if suffix == Some('u') || suffix == Some('U') {
             self.advance();
@@ -570,30 +590,6 @@ impl<'a> Lexer<'a> {
                 CompileError::syntax("invalid long literal", span)
             })?;
             return Ok(Token::new(TokenKind::IntLit(v), span, format!("{}L", int_part)));
-        }
-
-        if is_float {
-            let cleaned = {
-                let mut s = int_part.clone();
-                if !frac.is_empty() && !frac.starts_with('e') && !frac.starts_with('E') {
-                    // split digits from exponent in frac
-                    if let Some(ei) = frac.find(|c: char| c == 'e' || c == 'E') {
-                        s.push('.');
-                        s.push_str(&frac[..ei]);
-                        s.push_str(&frac[ei..]);
-                    } else {
-                        s.push('.');
-                        s.push_str(&frac);
-                    }
-                } else if !frac.is_empty() {
-                    s.push_str(&frac);
-                }
-                s
-            };
-            let v: f64 = cleaned.parse().map_err(|_| {
-                CompileError::syntax(format!("invalid float literal '{}'", cleaned), span)
-            })?;
-            return Ok(Token::new(TokenKind::FloatLit(v), span, cleaned));
         }
 
         let v: i64 = int_part.parse().map_err(|_| {

@@ -152,8 +152,23 @@ impl Value {
     pub fn as_int(&self) -> RuntimeResult<i64> {
         match self {
             Value::Int(n) => Ok(*n),
-            Value::UInt(n) => Ok(*n as i64),
-            Value::Float(n) => Ok(*n as i64),
+            Value::UInt(n) => {
+                i64::try_from(*n).map_err(|_| {
+                    RuntimeError::TypeError(format!(
+                        "cannot convert uint {} to int (overflow)",
+                        n
+                    ))
+                })
+            }
+            Value::Float(n) => {
+                if *n < i64::MIN as f64 || *n > i64::MAX as f64 {
+                    return Err(RuntimeError::TypeError(format!(
+                        "cannot convert float {} to int (overflow)",
+                        n
+                    )));
+                }
+                Ok(*n as i64)
+            }
             Value::Bool(b) => Ok(if *b { 1 } else { 0 }),
             Value::Char(c) => Ok(*c as i64),
             _ => Err(RuntimeError::TypeError(format!(
@@ -300,18 +315,56 @@ pub fn binary_op(op: &str, left: &Value, right: &Value) -> RuntimeResult<Value> 
             }
         }
         "%" => {
-            let ri = right.as_int()?;
-            if ri == 0 {
-                return Err(RuntimeError::DivisionByZero);
+            if matches!(left, Value::UInt(_)) || matches!(right, Value::UInt(_)) {
+                let r = right.as_int()?;
+                if r == 0 {
+                    return Err(RuntimeError::DivisionByZero);
+                }
+                let l = left.as_int()?;
+                // Use wrapping_rem for unsigned-safe modulus
+                if l >= 0 && r > 0 {
+                    Ok(Value::Int(l % r))
+                } else {
+                    Ok(Value::Int(((l % r) + r) % r))
+                }
+            } else {
+                let ri = right.as_int()?;
+                if ri == 0 {
+                    return Err(RuntimeError::DivisionByZero);
+                }
+                Ok(Value::Int(left.as_int()? % ri))
             }
-            Ok(Value::Int(left.as_int()? % ri))
         }
         "==" => Ok(Value::Bool(left.equals(right))),
         "!=" => Ok(Value::Bool(!left.equals(right))),
-        "<" => Ok(Value::Bool(left.as_float()? < right.as_float()?)),
-        "<=" => Ok(Value::Bool(left.as_float()? <= right.as_float()?)),
-        ">" => Ok(Value::Bool(left.as_float()? > right.as_float()?)),
-        ">=" => Ok(Value::Bool(left.as_float()? >= right.as_float()?)),
+        "<" => {
+            if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+                Ok(Value::Bool(left.as_float()? < right.as_float()?))
+            } else {
+                Ok(Value::Bool(left.as_int()? < right.as_int()?))
+            }
+        }
+        "<=" => {
+            if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+                Ok(Value::Bool(left.as_float()? <= right.as_float()?))
+            } else {
+                Ok(Value::Bool(left.as_int()? <= right.as_int()?))
+            }
+        }
+        ">" => {
+            if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+                Ok(Value::Bool(left.as_float()? > right.as_float()?))
+            } else {
+                Ok(Value::Bool(left.as_int()? > right.as_int()?))
+            }
+        }
+        ">=" => {
+            if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+                Ok(Value::Bool(left.as_float()? >= right.as_float()?))
+            } else {
+                Ok(Value::Bool(left.as_int()? >= right.as_int()?))
+            }
+        }
         "&&" => Ok(Value::Bool(left.is_truthy() && right.is_truthy())),
         "||" => Ok(Value::Bool(left.is_truthy() || right.is_truthy())),
         "&" => Ok(Value::Int(left.as_int()? & right.as_int()?)),

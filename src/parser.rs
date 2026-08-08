@@ -271,39 +271,13 @@ impl Parser {
                 ));
             }
         };
-        let alias = if self.match_kind(&[TokenKind::As]) || self.match_kind(&[TokenKind::Ident(String::from("as"))]) {
-            // 'as' is keyword As — already handled. Also allow Ident "as" if not keyword.
-            // Actually `as` is TokenKind::As
-            let (alias, _) = self.expect_ident()?;
-            Some(alias)
-        } else if matches!(&self.current().kind, TokenKind::Ident(s) if s == "as") {
-            self.advance();
-            let (alias, _) = self.expect_ident()?;
-            Some(alias)
-        } else {
-            // Check for `as` keyword
-            None
-        };
-        // Re-check: import json = bstd.json;
-        let alias = if alias.is_none() && self.match_kind(&[TokenKind::Eq]) {
-            // Wait, that's wrong. Spec: import json = bstd.json;
-            // We already parsed path. Alternative form: import alias = path
-            None
-        } else {
-            alias
-        };
-
-        // Handle: import alias = path  — if we parsed ident then =
-        // Actually after import, if we see Ident Eq Ident... 
-        // Simpler: also accept `import name = path`
-        let _ = alias;
+        // Handle `import path as alias;` or `import alias = path;`
         let mut alias = None;
-        // Re-parse style: look at previous approach
-        // For `import bstd.io;` path is done.
-        // For `import json = bstd.json;` — first ident is alias
-        // We need to restructure. Let me check if next is `=` after single ident path without dots...
-        // Too late. Support `import x = y.z` by: if path has no dots and next is Eq:
-        if !path.contains('.') && self.check(&TokenKind::Eq) {
+        if self.check(&TokenKind::As) {
+            self.advance();
+            let (a, _) = self.expect_ident()?;
+            alias = Some(a);
+        } else if !path.contains('.') && self.check(&TokenKind::Eq) {
             self.advance();
             let mut parts = Vec::new();
             let (p, _) = self.expect_ident()?;
@@ -321,14 +295,6 @@ impl Parser {
                 span: start.merge(self.previous().span),
             });
         }
-
-        // `import "Lib" as third;`
-        if self.check(&TokenKind::As) {
-            self.advance();
-            let (a, _) = self.expect_ident()?;
-            alias = Some(a);
-        }
-
         self.expect(TokenKind::Semicolon, "expected ';' after import")?;
         Ok(ImportDecl {
             path,
@@ -524,32 +490,29 @@ impl Parser {
             } else {
                 bounds.push(self.parse_type_ref()?);
             }
-            while self.match_kind(&[TokenKind::Comma]) {
-                // Could be next constraint or more bounds — RayTask uses `where T : class`
-                // For simplicity, treat comma as more bounds unless followed by Ident Colon
-                if matches!(self.peek_kind(1), Some(TokenKind::Colon)) {
-                    // next constraint — put back conceptually by parsing new constraint
-                    // Actually we already consumed comma. Parse next type_param:
-                    let (tp, _) = self.expect_ident()?;
-                    self.expect(TokenKind::Colon, "expected ':'")?;
-                    constraints.push(GenericConstraint {
-                        type_param,
-                        bounds,
-                    });
-                    // restart with tp
-                    let mut bounds2 = Vec::new();
-                    bounds2.push(self.parse_type_ref()?);
-                    constraints.push(GenericConstraint {
-                        type_param: tp,
-                        bounds: bounds2,
-                    });
-                    // This is messy — simplify: only one constraint per where for MVP
-                    return Ok(constraints);
+            while self.check(&TokenKind::Comma) {
+                // Peek: if comma is followed by Ident Colon, it's a new constraint
+                let is_next_constraint = matches!(self.peek_kind(1), Some(TokenKind::Ident(_)))
+                    && matches!(self.peek_kind(2), Some(TokenKind::Colon));
+                if is_next_constraint {
+                    break;
                 }
-                bounds.push(self.parse_type_ref()?);
+                self.advance(); // consume comma
+                if self.check(&TokenKind::New) {
+                    let span = self.current().span;
+                    self.advance();
+                    self.expect(TokenKind::LParen, "expected '('")?;
+                    self.expect(TokenKind::RParen, "expected ')'")?;
+                    bounds.push(TypeRef::named("new()", span));
+                } else {
+                    bounds.push(self.parse_type_ref()?);
+                }
             }
             constraints.push(GenericConstraint { type_param, bounds });
-            break;
+            if !self.check(&TokenKind::Comma) {
+                break;
+            }
+            self.advance(); // consume comma
         }
         Ok(constraints)
     }

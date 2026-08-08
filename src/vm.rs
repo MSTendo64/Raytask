@@ -59,6 +59,8 @@ pub struct Vm {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: Vec<Value>,
+    /// Tracks which global slots have been explicitly set (to distinguish null from uninitialized).
+    global_set: Vec<bool>,
     try_stack: Vec<TryFrame>,
     /// Current coroutine id.
     co_id: usize,
@@ -105,10 +107,12 @@ impl Vm {
         let stdlib_enabled = module.stdlib_enabled;
          let n = module.globals.len();
         let mut globals = vec![Value::Null; n.max(64)];
+        let mut global_set = vec![false; globals.len()];
         for (i, name) in module.globals.iter().enumerate() {
             if stdlib_enabled {
                 if let Some(v) = stdlib::builtin_global(name) {
                     globals[i] = v;
+                    global_set[i] = true;
                 }
             }
         }
@@ -117,6 +121,7 @@ impl Vm {
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
             globals,
+            global_set,
             try_stack: Vec::new(),
             co_id: 0,
             co_task: None,
@@ -196,16 +201,12 @@ impl Vm {
         if !self.heap.config().enabled {
             return;
         }
-        let should = self.heap.config().stress
-            || self.heap.stats().live_bytes >= self.heap.config().threshold_bytes;
-        // Use allocated_bytes via maybe_collect
         let roots = self.collect_roots();
         self.heap.maybe_collect(&roots);
         let finals = self.heap.take_pending_finalizers();
         for obj in finals {
             let _ = self.run_finalizer(&obj);
         }
-        let _ = should;
     }
 
     fn run_finalizer(&mut self, obj: &Rc<crate::gc::GcObject>) -> RuntimeResult<()> {
@@ -748,15 +749,23 @@ impl Vm {
             x if x == Op::GetGlobal as u8 => {
                 let idx = self.read_byte() as usize;
                 let v = self.globals.get(idx).cloned().unwrap_or(Value::Null);
-                if matches!(v, Value::Null) {
+                if matches!(v, Value::Null) && self.global_set.get(idx).copied().unwrap_or(false) == false {
                     if let Some(name) = self.module.globals.get(idx) {
                         if self.module.stdlib_enabled {
                             if let Some(b) = stdlib::builtin_global(name) {
+                                if idx >= self.globals.len() {
+                                    self.globals.resize(idx + 1, Value::Null);
+                                    self.global_set.resize(idx + 1, false);
+                                }
                                 self.globals[idx] = b.clone();
+                                self.global_set[idx] = true;
                                 self.push(b);
                                 return Ok(StepCtrl::Continue);
                             }
                         }
+                    }
+                    if idx < self.global_set.len() {
+                        self.global_set[idx] = true;
                     }
                 }
                 self.push(v);
@@ -764,18 +773,23 @@ impl Vm {
             x if x == Op::GetGlobal16 as u8 => {
                 let idx = self.read_u16() as usize;
                 let v = self.globals.get(idx).cloned().unwrap_or(Value::Null);
-                if matches!(v, Value::Null) {
+                if matches!(v, Value::Null) && self.global_set.get(idx).copied().unwrap_or(false) == false {
                     if let Some(name) = self.module.globals.get(idx) {
                         if self.module.stdlib_enabled {
                             if let Some(b) = stdlib::builtin_global(name) {
                                 if idx >= self.globals.len() {
                                     self.globals.resize(idx + 1, Value::Null);
+                                    self.global_set.resize(idx + 1, false);
                                 }
                                 self.globals[idx] = b.clone();
+                                self.global_set[idx] = true;
                                 self.push(b);
                                 return Ok(StepCtrl::Continue);
                             }
                         }
+                    }
+                    if idx < self.global_set.len() {
+                        self.global_set[idx] = true;
                     }
                 }
                 self.push(v);
@@ -785,32 +799,48 @@ impl Vm {
                 let v = self.peek(0)?.clone();
                 if idx >= self.globals.len() {
                     self.globals.resize(idx + 1, Value::Null);
+                    self.global_set.resize(idx + 1, false);
                 }
                 self.globals[idx] = v;
+                if idx < self.global_set.len() {
+                    self.global_set[idx] = true;
+                }
             }
             x if x == Op::SetGlobal16 as u8 => {
                 let idx = self.read_u16() as usize;
                 let v = self.peek(0)?.clone();
                 if idx >= self.globals.len() {
                     self.globals.resize(idx + 1, Value::Null);
+                    self.global_set.resize(idx + 1, false);
                 }
                 self.globals[idx] = v;
+                if idx < self.global_set.len() {
+                    self.global_set[idx] = true;
+                }
             }
             x if x == Op::DefineGlobal as u8 => {
                 let idx = self.read_byte() as usize;
                 let v = self.pop()?;
                 if idx >= self.globals.len() {
                     self.globals.resize(idx + 1, Value::Null);
+                    self.global_set.resize(idx + 1, false);
                 }
                 self.globals[idx] = v;
+                if idx < self.global_set.len() {
+                    self.global_set[idx] = true;
+                }
             }
             x if x == Op::DefineGlobal16 as u8 => {
                 let idx = self.read_u16() as usize;
                 let v = self.pop()?;
                 if idx >= self.globals.len() {
                     self.globals.resize(idx + 1, Value::Null);
+                    self.global_set.resize(idx + 1, false);
                 }
                 self.globals[idx] = v;
+                if idx < self.global_set.len() {
+                    self.global_set[idx] = true;
+                }
             }
             x if x == Op::GetProperty as u8 => {
                 let key = self.pop()?;

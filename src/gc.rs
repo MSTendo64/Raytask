@@ -161,7 +161,7 @@ impl GcHeap {
     }
 
     pub fn alloc_array(&mut self, items: Vec<Value>) -> Rc<GcArray> {
-        let bytes = 32 + items.capacity() * std::mem::size_of::<Value>();
+        let bytes = 32 + items.len() * std::mem::size_of::<Value>();
         let id = self.next_id();
         let rc = Rc::new(GcArray {
             marked: Cell::new(false),
@@ -174,7 +174,7 @@ impl GcHeap {
     }
 
     pub fn alloc_dict(&mut self, map: HashMap<String, Value>) -> Rc<GcDict> {
-        let bytes = 32 + map.capacity() * 32;
+        let bytes = 32 + map.len() * 32;
         let id = self.next_id();
         let rc = Rc::new(GcDict {
             marked: Cell::new(false),

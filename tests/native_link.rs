@@ -105,6 +105,9 @@ fn link_efi_and_raw_and_linux() {
             LinkTarget::RawX64 => {
                 assert!(bytes.windows(4).any(|w| w == b"RTBC"));
             }
+            LinkTarget::Triple(_) => {
+                assert!(!bytes.is_empty());
+            }
         }
     }
 }
