@@ -64,71 +64,9 @@ void StreamDemo() {
     File.Delete("all_demo.tmp");
 }
 
-// 4. Сжатие: gz round-trip
-void CompressDemo() {
-    print("=== Compression ===");
-    var text = "RayTask! ".Repeat(50);
-    File.WriteText("cmp.txt", text);
-    Compress.GzCompressFile("cmp.txt", "cmp.txt.gz");
-    Compress.GzDecompressFile("cmp.txt.gz", "cmp2.txt");
-    var ok = File.ReadText("cmp2.txt") == text;
-    print($"gz round-trip OK: {ok}");
-    File.Delete("cmp.txt");
-    File.Delete("cmp.txt.gz");
-    File.Delete("cmp2.txt");
-}
-
-// 5. Mutex: thread-safe counter (Thread.Run is synchronous in current VM)
-void MutexDemo() {
-    print("=== Thread + Mutex ===");
-    var mx = Mutex.New();
-    mx.Unlock(0);
-
-    // Count up via two sequential blocks simulating two threads
-    () => {
-        for (var i = 0; i < 100; i++) {
-            var cur = mx.Lock();
-            mx.Unlock(cur + 1);
-        }
-    }();
-    () => {
-        for (var i = 0; i < 100; i++) {
-            var cur = mx.Lock();
-            mx.Unlock(cur + 1);
-        }
-    }();
-    print($"Counter = {mx.Lock()}");   // 200
-}
-
-// 6. Channel: pipeline demo (Thread.Run is synchronous, run inline)
-void ChannelDemo() {
-    print("=== Channel Pipeline ===");
-    var ch = Channel.New();
-
-    // Run producer inline
-    (() => {
-        var g = Generator.Range(1, 6);
-        while (g.HasNext()) {
-            ch.Send(g.Next());
-        }
-        ch.Close();
-    })();
-
-    var results = new List<int> {};
-    var v = ch.Recv();
-    while (!IsNull(v)) {
-        results.Add(v * v);
-        v = ch.Recv();
-    }
-    print($"Squares: {results}");   // [1, 4, 9, 16, 25]
-}
-
 void Main() {
     GenSumDemo();
     DateDemo();
     StreamDemo();
-    CompressDemo();
-    MutexDemo();
-    ChannelDemo();
     print("=== All done ===");
 }

@@ -1,0 +1,6 @@
+import bstd.io;
+import bstd.time;
+import bstd.fs;
+
+// ── Сводный пример: потоки, каналы, генераторы, даты, стримы, сжатие ──────────
+void Main() { print("hello"); }

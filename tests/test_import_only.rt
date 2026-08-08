@@ -1,0 +1,2 @@
+import bstd.io;
+void Main() { print("ok"); }

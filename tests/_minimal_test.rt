@@ -1,0 +1,5 @@
+import bstd.io;
+
+void Main() {
+    print("hello");
+}

@@ -1,10 +1,14 @@
 {
   "name": "raytask",
-  "displayName": "RayTask",
-  "description": "Language support and debugging for the RayTask programming language",
-  "version": "0.1.3",
-   "publisher": "raytask",
+  "displayName": "RayTask Language",
+  "description": "Full language support for RayTask: syntax highlighting, IntelliSense, diagnostics, debugging, and package management",
+  "version": "0.2.0",
+  "publisher": "raytask",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1B4F72",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/MSTendo64/Raytask.git"
@@ -21,7 +25,10 @@
   "keywords": [
     "raytask",
     "rt",
-    "debugger"
+    "debugger",
+    "compiler",
+    "cross-platform",
+    "language"
   ],
   "activationEvents": [
     "onLanguage:raytask",
@@ -140,9 +147,14 @@
           "group": "raytask@3"
         },
         {
+          "command": "raytask.showAst",
+          "when": "resourceLangId == raytask",
+          "group": "raytask@5"
+        },
+        {
           "command": "raytask.openProjectFile",
           "when": "resourceLangId == raytask",
-          "group": "raytask@4"
+          "group": "raytask@6"
         }
       ],
       "explorer/context": [
@@ -158,6 +170,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "raytask.showAst",
+          "when": "resourceLangId == raytask"
+        },
         {
           "command": "raytask.openProjectFile",
           "when": "resourceLangId == raytask"
@@ -195,7 +211,7 @@
         "raytask.checkOnChange": {
           "type": "boolean",
           "default": false,
-          "description": "Run diagnostics while typing (debounced)."
+          "description": "Run diagnostics while typing (debounced 500ms). Can be CPU-intensive for large projects."
         },
         "raytask.trace.dap": {
           "type": "boolean",
@@ -206,6 +222,24 @@
           "type": "boolean",
           "default": true,
           "description": "When running/building inside a project, use the project entry point (from project.rtp) instead of the currently open file."
+        },
+        "raytask.buildTarget": {
+          "type": "string",
+          "default": "bytecode",
+          "enum": ["bytecode", "native", "native-bin", "app", "wasm"],
+          "enumDescriptions": [
+            "Bytecode VM (.rtbc)",
+            "Native AOT via C transpilation",
+            "Native AOT standalone binary",
+            "Self-contained app bundle",
+            "WebAssembly target"
+          ],
+          "description": "Default build target for 'RayTask: Build' command."
+        },
+        "raytask.hoverEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show hover documentation for keywords and stdlib types."
         }
       }
     },
@@ -241,10 +275,16 @@
         "properties": {
           "task": {
             "type": "string",
-            "description": "run | check | build | test"
+            "description": "One of: run, check, build, test, install, update",
+            "enum": ["run", "check", "build", "test", "install", "update"]
           },
           "file": {
-            "type": "string"
+            "type": "string",
+            "description": "Target file (defaults to project.rtp or active file)"
+          },
+          "target": {
+            "type": "string",
+            "description": "Build target: bytecode, native, native-bin, app, wasm"
           }
         }
       }
@@ -252,7 +292,7 @@
     "debuggers": [
       {
         "type": "raytask",
-        "label": "RayTask",
+        "label": "RayTask Debugger",
         "languages": [
           "raytask"
         ],
@@ -292,11 +332,13 @@
               },
               "noTypecheck": {
                 "type": "boolean",
-                "default": false
+                "default": false,
+                "description": "Skip type checking before running (faster startup)"
               },
               "gc": {
                 "type": "boolean",
-                "default": true
+                "default": true,
+                "description": "Enable garbage collection"
               },
               "trace": {
                 "type": "boolean",
@@ -351,7 +393,9 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "echo ready"
+    "vscode:prepublish": "echo ready",
+    "package": "npx @vscode/vsce package --no-dependencies -o raytask.vsix",
+    "install-local": "code --install-extension ./raytask.vsix --force"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

@@ -1,7 +1,11 @@
 .vscode/**
 .vscode-test/**
+.git/**
 .gitignore
 **/*.ts
 **/*.map
 node_modules/**
 *.vsix
+media/*.svg
+*.md
+!README.md

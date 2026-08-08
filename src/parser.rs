@@ -2442,7 +2442,12 @@ impl Parser {
         };
         self.expect(TokenKind::RParen, "expected ')'")?;
         let body = if self.match_kind(&[TokenKind::Arrow]) {
-            FunctionBody::Expr(Box::new(self.parse_expression()?))
+            // () => expr  or  () => { block }
+            if self.check(&TokenKind::LBrace) {
+                FunctionBody::Block(self.parse_block()?)
+            } else {
+                FunctionBody::Expr(Box::new(self.parse_expression()?))
+            }
         } else {
             FunctionBody::Block(self.parse_block()?)
         };

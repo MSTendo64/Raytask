@@ -131,7 +131,7 @@ impl<'a> Lexer<'a> {
         // Strings (including $"..." interpolated — stored as StringLit; parser expands {})
         if ch == '$' && self.peek_at(1) == Some('"') {
             self.advance(); // $
-            let mut tok = self.string_literal(start, line, col, false)?;
+            let mut tok = self.string_literal(start, line, col, false, true)?;
             // Mark as interpolated by prefixing with \x01 sentinel in lexeme metadata via kind
             if let TokenKind::StringLit(s) = tok.kind {
                 tok.kind = TokenKind::StringLit(format!("\u{0001}{}", s));
@@ -139,11 +139,11 @@ impl<'a> Lexer<'a> {
             return Ok(tok);
         }
         if ch == '"' {
-            return self.string_literal(start, line, col, false);
+            return self.string_literal(start, line, col, false, false);
         }
         if ch == '@' && self.peek_at(1) == Some('"') {
             self.advance(); // @
-            return self.string_literal(start, line, col, true);
+            return self.string_literal(start, line, col, true, false);
         }
         if ch == '\'' {
             return self.char_literal(start, line, col);
@@ -604,6 +604,7 @@ impl<'a> Lexer<'a> {
         line: usize,
         col: usize,
         raw: bool,
+        interpolated: bool,
     ) -> CompileResult<Token> {
         self.advance(); // opening "
         let mut s = String::new();
@@ -639,6 +640,8 @@ impl<'a> Lexer<'a> {
             ));
         }
 
+        let mut brace_depth = 0u32; // for $"..." — track {…} nesting
+
         loop {
             match self.peek() {
                 None => {
@@ -648,8 +651,14 @@ impl<'a> Lexer<'a> {
                     ));
                 }
                 Some('"') => {
-                    self.advance();
-                    break;
+                    // In an interpolated string nested inside braces, " is not a closing quote
+                    if interpolated && brace_depth > 0 {
+                        s.push('"');
+                        self.advance();
+                    } else {
+                        self.advance();
+                        break;
+                    }
                 }
                 Some('\\') => {
                     self.advance();
@@ -696,6 +705,18 @@ impl<'a> Lexer<'a> {
                         }
                         other => other,
                     });
+                    // Escaped { and } don't affect brace depth — the depth
+                    // tracking applies only to raw (unescaped) curly braces.
+                }
+                Some('{') if interpolated => {
+                    brace_depth += 1;
+                    s.push('{');
+                    self.advance();
+                }
+                Some('}') if interpolated && brace_depth > 0 => {
+                    brace_depth -= 1;
+                    s.push('}');
+                    self.advance();
                 }
                 Some(c) => {
                     s.push(c);

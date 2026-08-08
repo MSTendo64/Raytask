@@ -1,0 +1,10 @@
+import bstd.io;
+import bstd.time;
+import bstd.fs;
+
+// ── Comprehensive example: streams, channels, generators, dates, streams, compression ──────────
+
+void Main() {
+    print("hello");
+    
+}

@@ -1083,6 +1083,21 @@ impl Compiler {
         Some((false, uv_idx))
     }
 
+    /// Read-only check: can `name` be captured from enclosing scopes (without mutating)?
+    fn can_capture_name(enclosing: &[EnclosingFn], name: &str) -> bool {
+        if enclosing.is_empty() {
+            return false;
+        }
+        let last = enclosing.len() - 1;
+        if enclosing[last].locals.iter().any(|l| l.name == name) {
+            return true;
+        }
+        if enclosing[last].upvalues.iter().any(|u| u.name == name) {
+            return true;
+        }
+        Self::can_capture_name(&enclosing[..last], name)
+    }
+
     fn emit_get_name(&mut self, name: &str, line: usize) {
         match self.resolve_name(name) {
             NameRes::Local(slot) => {
@@ -1999,10 +2014,14 @@ impl Compiler {
                 // Method call: obj.method(args) => [fn, obj, args...]
                 if let Expr::Member { object, field, .. } = callee.as_ref() {
                     if let Expr::Ident(type_name, _) = object.as_ref() {
-                        // Static method call on a type: class name or stdlib type
+                        // Static method call on a type: class name or stdlib type.
+                        // We must also check whether the name is capturable as an upvalue,
+                        // since `self.upvalues` may not yet contain it at this point
+                        // (upvalues are lazily registered when compile_expr emits the name).
+                        let can_capture = self.upvalues.iter().any(|u| u.name == type_name.as_str())
+                            || Self::can_capture_name(&self.enclosing, type_name);
                         let is_type = self.classes.contains_key(type_name)
-                            || (self.resolve_local(type_name).is_none()
-                                && !self.upvalues.iter().any(|u| u.name == type_name.as_str()));
+                            || (self.resolve_local(type_name).is_none() && !can_capture);
                         if is_type {
                             self.compile_expr(object)?;
                             self.chunk()

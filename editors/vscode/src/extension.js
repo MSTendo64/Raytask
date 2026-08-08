@@ -179,7 +179,7 @@ function activate(context) {
       ].join("\n");
       fs.mkdirSync(path.join(root, "src"), { recursive: true });
       if (!fs.existsSync(path.join(root, "src", "main.rt"))) {
-        fs.writeFileSync(path.join(root, "src", "main.rt"), 'func main() {\n    print_ln("Hello, RayTask!");\n}\n');
+        fs.writeFileSync(path.join(root, "src", "main.rt"), 'import bstd.io;\n\nvoid Main() {\n    print("Hello, RayTask!");\n}\n');
       }
       fs.writeFileSync(rtp, content, "utf8");
       const doc = await vscode.window.showTextDocument(vscode.Uri.file(rtp));

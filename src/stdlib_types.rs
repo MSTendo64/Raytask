@@ -402,6 +402,14 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
         "Format".into(),
         method("Format", vec![("fmt", Ty::String)], Ty::String, false),
     );
+    dt.methods.insert(
+        "Diff".into(),
+        method("Diff", vec![("other", Ty::Named("DateTime".into()))], Ty::Named("TimeSpan".into()), false),
+    );
+    dt.methods.insert(
+        "Add".into(),
+        method("Add", vec![("span", Ty::Named("TimeSpan".into()))], Ty::Named("DateTime".into()), false),
+    );
     types.insert("DateTime".into(), dt);
 
     let mut ts = empty_class("TimeSpan");
@@ -442,6 +450,144 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
         method("ToString", vec![], Ty::String, false),
     );
     types.insert("TimeSpan".into(), ts);
+
+    let mut gen = empty_class("Generator");
+    gen.methods.insert(
+        "Range".into(),
+        method("Range", vec![("start", Ty::Int), ("end", Ty::Int)], Ty::Named("Generator".into()), true),
+    );
+    gen.methods.insert(
+        "From".into(),
+        method("From", vec![("items", Ty::Dyn)], Ty::Named("Generator".into()), true),
+    );
+    gen.methods.insert(
+        "Repeat".into(),
+        method("Repeat", vec![("value", Ty::Dyn)], Ty::Named("Generator".into()), true),
+    );
+    gen.methods.insert(
+        "Empty".into(),
+        method("Empty", vec![], Ty::Named("Generator".into()), true),
+    );
+    gen.methods.insert(
+        "Next".into(),
+        method("Next", vec![], Ty::Dyn, false),
+    );
+    gen.methods.insert(
+        "HasNext".into(),
+        method("HasNext", vec![], Ty::Bool, false),
+    );
+    gen.methods.insert(
+        "Reset".into(),
+        method("Reset", vec![], Ty::Void, false),
+    );
+    types.insert("Generator".into(), gen);
+
+    let mut stream = empty_class("Stream");
+    stream.methods.insert(
+        "OpenRead".into(),
+        method("OpenRead", vec![("path", Ty::String)], Ty::Named("Stream".into()), true),
+    );
+    stream.methods.insert(
+        "OpenWrite".into(),
+        method("OpenWrite", vec![("path", Ty::String)], Ty::Named("Stream".into()), true),
+    );
+    stream.methods.insert(
+        "Read".into(),
+        method("Read", vec![("size", Ty::Int)], Ty::String, false),
+    );
+    stream.methods.insert(
+        "ReadLine".into(),
+        method("ReadLine", vec![], Ty::String, false),
+    );
+    stream.methods.insert(
+        "Write".into(),
+        method("Write", vec![("data", Ty::String)], Ty::Void, false),
+    );
+    stream.methods.insert(
+        "WriteLine".into(),
+        method("WriteLine", vec![("data", Ty::String)], Ty::Void, false),
+    );
+    stream.methods.insert(
+        "Close".into(),
+        method("Close", vec![], Ty::Void, false),
+    );
+    types.insert("Stream".into(), stream);
+
+    let mut mutex = empty_class("Mutex");
+    mutex.methods.insert(
+        "New".into(),
+        method("New", vec![], Ty::Named("Mutex".into()), true),
+    );
+    mutex.methods.insert(
+        "Lock".into(),
+        method("Lock", vec![], Ty::Int, false),
+    );
+    mutex.methods.insert(
+        "Unlock".into(),
+        method("Unlock", vec![("value", Ty::Int)], Ty::Void, false),
+    );
+    mutex.methods.insert(
+        "TryLock".into(),
+        method("TryLock", vec![], Ty::Bool, false),
+    );
+    types.insert("Mutex".into(), mutex);
+
+    let mut thread = empty_class("Thread");
+    thread.methods.insert(
+        "Run".into(),
+        method("Run", vec![("fn", Ty::Dyn)], Ty::Named("Thread".into()), true),
+    );
+    thread.methods.insert(
+        "Sleep".into(),
+        method("Sleep", vec![("ms", Ty::Int)], Ty::Void, true),
+    );
+    thread.methods.insert(
+        "Wait".into(),
+        method("Wait", vec![], Ty::Void, false),
+    );
+    types.insert("Thread".into(), thread);
+
+    let mut channel = empty_class("Channel");
+    channel.methods.insert(
+        "New".into(),
+        method("New", vec![], Ty::Named("Channel".into()), true),
+    );
+    channel.methods.insert(
+        "Send".into(),
+        method("Send", vec![("value", Ty::Dyn)], Ty::Void, false),
+    );
+    channel.methods.insert(
+        "Recv".into(),
+        method("Recv", vec![], Ty::Dyn, false),
+    );
+    channel.methods.insert(
+        "TryRecv".into(),
+        method("TryRecv", vec![], Ty::Dyn, false),
+    );
+    channel.methods.insert(
+        "Close".into(),
+        method("Close", vec![], Ty::Void, false),
+    );
+    types.insert("Channel".into(), channel);
+
+    let mut compress = empty_class("Compress");
+    compress.methods.insert(
+        "GzCompress".into(),
+        method("GzCompress", vec![("data", Ty::String)], Ty::String, true),
+    );
+    compress.methods.insert(
+        "GzDecompress".into(),
+        method("GzDecompress", vec![("data", Ty::String)], Ty::String, true),
+    );
+    compress.methods.insert(
+        "GzCompressFile".into(),
+        method("GzCompressFile", vec![("src", Ty::String), ("dst", Ty::String)], Ty::Void, true),
+    );
+    compress.methods.insert(
+        "GzDecompressFile".into(),
+        method("GzDecompressFile", vec![("src", Ty::String), ("dst", Ty::String)], Ty::Void, true),
+    );
+    types.insert("Compress".into(), compress);
 
     let mut json = empty_class("Json");
     json.methods.insert(

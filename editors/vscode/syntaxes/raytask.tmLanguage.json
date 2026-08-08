@@ -36,7 +36,7 @@
     },
     "preprocessor": {
       "name": "meta.preprocessor.raytask",
-      "match": "^\\s*#(if|elif|else|endif|pragma)\\b.*$"
+      "match": "^\\s*#(if|elif|else|endif|pragma|define|undef|region|endregion|include)\\b.*$"
     },
     "attributes": {
       "name": "meta.attribute.raytask",
@@ -45,7 +45,7 @@
       "patterns": [
         {
           "name": "entity.name.function.attribute.raytask",
-          "match": "\\b(test|export|entry|DllImport|link|include|c|cembed|embed|interrupt|address|no_gc|optimize|debug|target|abi|symbol|name)\\b"
+          "match": "\\b(test|export|entry|DllImport|link|include|c|cembed|embed|interrupt|address|no_gc|optimize|debug|target|abi|symbol|name|packed|align|repr|repr\\s*:\\s*\"C\")\\b"
         },
         { "include": "#strings" },
         { "include": "#numbers" }
@@ -69,7 +69,8 @@
               "patterns": [
                 { "include": "#keywords" },
                 { "include": "#numbers" },
-                { "include": "#constants" }
+                { "include": "#constants" },
+                { "include": "#operators" }
               ]
             }
           ]
@@ -120,25 +121,25 @@
       "patterns": [
         {
           "name": "keyword.control.raytask",
-          "match": "\\b(if|else|switch|case|default|break|continue|for|foreach|while|do|return|try|catch|finally|throw|match|await)\\b"
+          "match": "\\b(if|else|switch|case|default|break|continue|for|foreach|while|do|return|try|catch|finally|throw|match|await|when)\\b"
         },
         {
           "name": "keyword.other.raytask",
-          "match": "\\b(import|namespace|module|export|protected|private|class|struct|interface|abstract|virtual|override|new|base|this|super|property|get|set|where|operator|params|using|unsafe|stack|owned|async|var|dyn|const|is|as|typeof|sizeof|in)\\b"
+          "match": "\\b(import|namespace|module|export|protected|private|class|struct|interface|abstract|virtual|override|new|base|this|super|property|get|set|where|operator|params|using|unsafe|stack|owned|async|var|dyn|const|is|as|typeof|sizeof|offsetof|nameof|in|volatile)\\b"
         },
         {
           "name": "storage.modifier.raytask",
-          "match": "\\b(export|protected|private|abstract|virtual|override|async|unsafe|stack|owned)\\b"
+          "match": "\\b(export|protected|private|abstract|virtual|override|async|unsafe|stack|owned|volatile)\\b"
         }
       ]
     },
     "types": {
       "name": "support.type.raytask",
-      "match": "\\b(void|bool|byte|sbyte|short|ushort|int|uint|long|ulong|float|double|decimal|char|string|ptr|List|Dictionary|Set|Queue|Stack|Task|Result|DateTime|File|Directory|StringBuilder|Logger|Http|Json|Yaml|Math|Random|Hash|Gc|GC|Object|Exception)\\b"
+      "match": "\\b(void|bool|byte|sbyte|short|ushort|int|uint|long|ulong|float|double|decimal|char|string|ptr|List|Dictionary|Set|Queue|Stack|Task|Result|DateTime|TimeSpan|File|Directory|StringBuilder|Logger|Http|Json|Yaml|Math|Random|Hash|Gc|GC|Object|Exception|IDisposable|CancellationToken|TaskGroup|JoinGroup|Timer|Sqlite|Convert|Env|Crypto|Regex)\\b"
     },
     "constants": {
       "name": "constant.language.raytask",
-      "match": "\\b(true|false|null|this|base|super)\\b"
+      "match": "\\b(true|false|null|this|base|super|NaN|Infinity)\\b"
     },
     "functions": {
       "patterns": [
@@ -152,7 +153,7 @@
       "patterns": [
         {
           "name": "keyword.operator.assignment.raytask",
-          "match": "(\\+|\\-|\\*|/|%|\\&|\\||\\^|<<|>>)?="
+          "match": "(\\+\\+|\\-\\-|\\+|\\-|\\*|/|%|\\&|\\||\\^|<<|>>)?=|\\?\\?="
         },
         {
           "name": "keyword.operator.comparison.raytask",
@@ -163,12 +164,20 @@
           "match": "(\\&\\&|\\|\\||!)"
         },
         {
+          "name": "keyword.operator.null-safe.raytask",
+          "match": "\\?\\."
+        },
+        {
           "name": "keyword.operator.null-coalescing.raytask",
           "match": "\\?\\?"
         },
         {
           "name": "keyword.operator.arrow.raytask",
           "match": "(=>|->)"
+        },
+        {
+          "name": "keyword.operator.range.raytask",
+          "match": "\\.\\."
         }
       ]
     }

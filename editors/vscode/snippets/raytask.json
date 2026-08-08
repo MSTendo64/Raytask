@@ -120,5 +120,125 @@
       "\tset { this.${3:field} = value; }",
       "}"
     ]
+  },
+  "Using Dispose": {
+    "prefix": "using",
+    "body": [
+      "using (${1:var} ${2:resource} = ${3:expr}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "using statement (auto-dispose)"
+  },
+  "Try Catch typed": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "\t$0",
+      "} catch (${1:e}: ${2:ExceptionType}) {",
+      "\tprint(${1:e});",
+      "} catch {",
+      "\t// fallback",
+      "}"
+    ],
+    "description": "try-catch with typed exception"
+  },
+  "Try Catch Finally": {
+    "prefix": "tryf",
+    "body": [
+      "try {",
+      "\t$0",
+      "} catch (${1:e}) {",
+      "\tprint(${1:e});",
+      "} finally {",
+      "\t// cleanup",
+      "}"
+    ],
+    "description": "try-catch-finally"
+  },
+  "Switch with when guard": {
+    "prefix": "switchw",
+    "body": [
+      "switch (${1:value}) {",
+      "\tcase ${2:pattern} when ${3:guard}: {",
+      "\t\t$0",
+      "\t\tbreak;",
+      "\t}",
+      "\tdefault: {",
+      "\t\tbreak;",
+      "\t}",
+      "}"
+    ],
+    "description": "switch with when guard"
+  },
+  "Block Lambda": {
+    "prefix": "lambda",
+    "body": "(${1:x}) => { ${0:/* body */} }",
+    "description": "block lambda expression"
+  },
+  "DateTime.Now": {
+    "prefix": "dtnow",
+    "body": "DateTime.Now",
+    "description": "DateTime.Now property"
+  },
+  "DateTime.UtcNow": {
+    "prefix": "dtutc",
+    "body": "DateTime.UtcNow",
+    "description": "DateTime.UtcNow property"
+  },
+  "TimeSpan.FromSeconds": {
+    "prefix": "tss",
+    "body": "TimeSpan.FromSeconds(${1:seconds})",
+    "description": "TimeSpan.FromSeconds factory"
+  },
+  "TimeSpan properties": {
+    "prefix": "tsp",
+    "body": [
+      "var ${1:ts} = TimeSpan.FromSeconds(${2:0});",
+      "${1:ts}.TotalSeconds",
+      "${1:ts}.TotalMinutes",
+      "${1:ts}.TotalHours",
+      "${1:ts}.TotalDays",
+      "${1:ts}.TotalMilliseconds"
+    ],
+    "description": "TimeSpan with all properties"
+  },
+  "GC.Collect": {
+    "prefix": "gc",
+    "body": "GC.Collect()",
+    "description": "Explicit garbage collection"
+  },
+  "Nullable check": {
+    "prefix": "nif",
+    "body": "if (${1:obj} != null) {\n\t${1:obj}.${2:member};\n}",
+    "description": "null-safe guard pattern"
+  },
+  "Interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:IName} {",
+      "\t${2:void} ${3:Method}(${4:args});",
+      "\t$0",
+      "}"
+    ],
+    "description": "interface definition"
+  },
+  "Extension method": {
+    "prefix": "ext",
+    "body": [
+      "export void ${1:MethodName}(this ${2:Type} self, ${3:args}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "extension method"
+  },
+  "Operator overload": {
+    "prefix": "op",
+    "body": [
+      "operator ${1:+}(${2:Type} a, ${2:Type} b): ${2:Type} {",
+      "\treturn /* result */;",
+      "}"
+    ],
+    "description": "operator overload"
   }
 }

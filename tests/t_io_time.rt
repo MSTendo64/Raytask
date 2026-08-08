@@ -1,0 +1,4 @@
+import bstd.io;
+import bstd.time;
+
+void Main() {}
