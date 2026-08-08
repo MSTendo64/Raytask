@@ -76,6 +76,8 @@ pub enum Op {
     GetGlobal16,
     SetGlobal16,
     DefineGlobal16,
+    /// Pops prefix, peeks at string on stack; pushes bool: whether string starts with prefix.
+    StringStartsWith,
 }
 
 impl Op {
@@ -144,6 +146,7 @@ impl Op {
             61 => Self::GetGlobal16,
             62 => Self::SetGlobal16,
             63 => Self::DefineGlobal16,
+            64 => Self::StringStartsWith,
             _ => return None,
         })
     }
@@ -213,6 +216,7 @@ impl Op {
             Self::GetGlobal16 => "GetGlobal16",
             Self::SetGlobal16 => "SetGlobal16",
             Self::DefineGlobal16 => "DefineGlobal16",
+            Self::StringStartsWith => "StringStartsWith",
         }
     }
 }

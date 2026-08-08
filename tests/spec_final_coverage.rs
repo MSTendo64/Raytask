@@ -1742,3 +1742,143 @@ fn misc_const() {
         }
     "#);
 }
+
+// =============================================================
+// 25. ROUND-2 FIXES — block lambdas, using, typed catch, DateTime, GC, NaN
+// =============================================================
+
+/// Block lambda: (params) { body }
+#[test]
+fn fix_block_lambda() {
+    run_ok(r#"
+        void Main() {
+            var fn = (a: int, b: int) {
+                return a + b;
+            };
+            assertEq(fn(40, 2), 42);
+        }
+    "#);
+}
+
+/// using (var x = expr) { ... } calls Dispose
+#[test]
+fn fix_using_dispose() {
+    run_ok(r#"
+        class MyDisposable {
+            bool disposed = false;
+            void Dispose() { this.disposed = true; }
+        }
+        void Main() {
+            var obj = new MyDisposable();
+            {
+                using (var d = obj) {}
+            }
+            assertEq(obj.disposed, true);
+        }
+    "#);
+}
+
+/// catch (name: ExceptionType) typed catch
+#[test]
+fn fix_catch_typed() {
+    run_ok(r#"
+        void Main() {
+            try {
+                throw "TypeError: something bad";
+            } catch (e: TypeError) {
+                return;
+            }
+            assertEq(false, true);
+        }
+    "#);
+}
+
+/// catch (name: Type) falls through to default catch
+#[test]
+fn fix_catch_typed_fallthrough() {
+    run_ok(r#"
+        void Main() {
+            var caught = false;
+            try {
+                throw "OtherError: something";
+            } catch (e: TypeError) {
+            } catch {
+                caught = true;
+            }
+            assertEq(caught, true);
+        }
+    "#);
+}
+
+/// DateTime.Parse
+#[test]
+fn fix_datetime_parse() {
+    run_ok(r#"
+        void Main() {
+            var dt = DateTime.Parse("2024-01-15T12:30:00");
+            assertEq(dt.Year, 2024);
+            assertEq(dt.Month, 1);
+            assertEq(dt.Day, 15);
+        }
+    "#);
+}
+
+/// TimeSpan.FromSeconds
+#[test]
+fn fix_timespan() {
+    run_ok(r#"
+        void Main() {
+            var ts = TimeSpan.FromSeconds(125);
+            assertEq(ts.TotalSeconds, 125.0);
+        }
+    "#);
+}
+
+/// GC.Collect explicit GC call
+#[test]
+fn fix_gc_collect() {
+    run_ok(r#"
+        void Main() {
+            var freed = GC.Collect();
+            assertEq(freed >= 0, true);
+        }
+    "#);
+}
+
+/// 0.0 / 0.0 returns NaN (not DivisionByZero)
+#[test]
+fn fix_float_nan() {
+    run_ok(r#"
+        void Main() {
+            var nan = 0.0 / 0.0;
+            assertEq(nan != nan, true);
+        }
+    "#);
+}
+
+/// 1.0 / 0.0 returns Infinity
+#[test]
+fn fix_float_inf() {
+    run_ok(r#"
+        void Main() {
+            var inf = 1.0 / 0.0;
+            assertEq(inf > 1.0e30, true);
+        }
+    "#);
+}
+
+/// Integer division by zero still raises error
+#[test]
+fn fix_int_div_zero_still_error() {
+    run_ok(r#"
+        void Main() {
+            var ok = false;
+            try {
+                var x = 1 / 0;
+            } catch {
+                ok = true;
+            }
+            assertEq(ok, true);
+        }
+    "#);
+}

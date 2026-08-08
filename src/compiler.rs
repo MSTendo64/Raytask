@@ -1583,13 +1583,31 @@ impl Compiler {
                 finally,
                 span,
             } => {
+                // TryBegin: forward jump to catch handler
                 let try_begin = self.chunk().emit_jump(Op::TryBegin, span.line);
                 self.compile_block(body)?;
                 self.chunk().emit_op(Op::TryEnd, span.line);
-                let end_jump = self.chunk().emit_jump(Op::Jump, span.line);
+                // Jump over all catch handlers
+                let after_catches = self.chunk().emit_jump(Op::Jump, span.line);
+
+                // Patch TryBegin to point here — exception value is on stack
                 self.chunk().patch_jump(try_begin);
-                // catch handlers — simplified: first catch gets exception on stack
-                if let Some(catch) = catches.first() {
+
+                let has_default = catches.iter().any(|c| c.exception_type.is_none());
+                let mut skip_body_jumps: Vec<usize> = Vec::new();
+                let mut done_jumps: Vec<usize> = Vec::new();
+
+                for (i, catch) in catches.iter().enumerate() {
+                    if let Some(exty) = &catch.exception_type {
+                        // Typed catch: Dup ex, Constant type, StringStartsWith
+                        self.chunk().emit_op(Op::Dup, span.line);
+                        self.chunk()
+                            .emit_constant(Value::String(exty.name.clone().into()), span.line);
+                        self.chunk().emit_op(Op::StringStartsWith, span.line);
+                        let no_match = self.chunk().emit_jump(Op::JumpIfFalse, span.line);
+                        skip_body_jumps.push(no_match);
+                    }
+                    // Bind exception to local
                     if let Some(name) = &catch.name {
                         self.add_local(name);
                         let slot = (self.locals.len() - 1) as u8;
@@ -1600,8 +1618,30 @@ impl Compiler {
                         self.chunk().emit_op(Op::Pop, span.line);
                     }
                     self.compile_block(&catch.body)?;
+                    // Jump to after all catches (past re-throw)
+                    let skip_rest = self.chunk().emit_jump(Op::Jump, span.line);
+                    done_jumps.push(skip_rest);
+
+                    // Patch the "no match" jump for THIS catch to point here (next handler)
+                    if i < skip_body_jumps.len() {
+                        self.chunk().patch_jump(skip_body_jumps[i]);
+                    }
                 }
-                self.chunk().patch_jump(end_jump);
+
+                // If no default catch, re-throw uncaught exception
+                if !has_default {
+                    self.chunk().emit_op(Op::Throw, span.line);
+                } else {
+                    // Pop the exception value left from the last failed type check
+                    self.chunk().emit_op(Op::Pop, span.line);
+                }
+
+                // Patch all "done" jumps and after_catches
+                self.chunk().patch_jump(after_catches);
+                for j in done_jumps {
+                    self.chunk().patch_jump(j);
+                }
+
                 if let Some(f) = finally {
                     self.compile_block(f)?;
                 }
@@ -1953,7 +1993,11 @@ impl Compiler {
                 // Method call: obj.method(args) => [fn, obj, args...]
                 if let Expr::Member { object, field, .. } = callee.as_ref() {
                     if let Expr::Ident(type_name, _) = object.as_ref() {
-                        if self.classes.contains_key(type_name) {
+                        // Static method call on a type: class name or stdlib type
+                        let is_type = self.classes.contains_key(type_name)
+                            || (self.resolve_local(type_name).is_none()
+                                && !self.upvalues.iter().any(|u| u.name == type_name.as_str()));
+                        if is_type {
                             self.compile_expr(object)?;
                             self.chunk()
                                 .emit_constant(Value::String(field.clone().into()), line);

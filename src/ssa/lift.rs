@@ -811,6 +811,17 @@ fn translate_range(
                 );
                 stack.push(vid);
             }
+            Op::StringStartsWith => {
+                let _prefix = stack.pop();
+                let _arg = stack.pop().unwrap_or_else(|| null_const(func, bb, line));
+                // Push opaque result (always true at SSA level, VM handles the actual check)
+                let vid = func.alloc_value();
+                func.push_inst(
+                    bb,
+                    mk(vid, InstKind::Const(ConstValue::Bool(true)), SsaTy::Bool, true),
+                );
+                stack.push(vid);
+            }
         }
     }
     let _ = (is_entry, stack);

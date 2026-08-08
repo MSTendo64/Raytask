@@ -1797,10 +1797,12 @@ impl TypeChecker {
                 for c in catches {
                     self.push_scope();
                     if let Some(name) = &c.name {
+                        // Exception types are matched by name string at runtime;
+                        // use the raw name without resolving to a concrete type.
                         let ty = c
                             .exception_type
                             .as_ref()
-                            .map(|t| self.resolve_type_ref(t))
+                            .map(|t| Ty::Named(t.name.clone().into()))
                             .unwrap_or(Ty::Named("Exception".into()));
                         self.declare_local(name, ty, false, c.body.span);
                     }

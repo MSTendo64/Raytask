@@ -294,7 +294,12 @@ impl Vm {
                     if let Some(handler) = self.try_stack.pop() {
                         self.frames.truncate(handler.frame_len);
                         self.stack.truncate(handler.stack_len);
-                        self.push(Value::String(format!("{}", e).into()));
+                        // Push raw exception message string for catch blocks to inspect
+                        let msg = match &e {
+                            RuntimeError::Exception(s) => s.clone(),
+                            other => format!("{}", other),
+                        };
+                        self.push(Value::String(msg.into()));
                         if let Some(frame) = self.frames.last_mut() {
                             frame.chunk = handler.chunk;
                             frame.ip = handler.handler_ip;
@@ -1255,6 +1260,14 @@ impl Vm {
                     ),
                     _ => false,
                 };
+                self.push(Value::Bool(ok));
+            }
+            x if x == Op::StringStartsWith as u8 => {
+                let prefix = self.pop()?;
+                let s = self.pop()?;
+                let s_str: &str = &s.as_string();
+                let prefix_str: &str = &prefix.as_string();
+                let ok = s_str.starts_with(prefix_str) || s_str == prefix_str;
                 self.push(Value::Bool(ok));
             }
             other => {

@@ -384,11 +384,59 @@ pub(crate) fn register_into(types: &mut HashMap<String, TypeDef>) {
     dt.properties.insert("Utc".into(), Ty::Bool);
     dt.properties.insert("Now".into(), Ty::Named("DateTime".into()));
     dt.properties.insert("UtcNow".into(), Ty::Named("DateTime".into()));
+    dt.properties.insert("Year".into(), Ty::Int);
+    dt.properties.insert("Month".into(), Ty::Int);
+    dt.properties.insert("Day".into(), Ty::Int);
+    dt.properties.insert("Hour".into(), Ty::Int);
+    dt.properties.insert("Minute".into(), Ty::Int);
+    dt.properties.insert("Second".into(), Ty::Int);
     dt.methods.insert(
         "ToString".into(),
         method("ToString", vec![], Ty::String, false),
     );
+    dt.methods.insert(
+        "Parse".into(),
+        method("Parse", vec![("s", Ty::String)], Ty::Named("DateTime".into()), true),
+    );
+    dt.methods.insert(
+        "Format".into(),
+        method("Format", vec![("fmt", Ty::String)], Ty::String, false),
+    );
     types.insert("DateTime".into(), dt);
+
+    let mut ts = empty_class("TimeSpan");
+    ts.properties.insert("TotalMilliseconds".into(), Ty::Float);
+    ts.properties.insert("TotalSeconds".into(), Ty::Float);
+    ts.properties.insert("TotalMinutes".into(), Ty::Float);
+    ts.properties.insert("TotalHours".into(), Ty::Float);
+    ts.properties.insert("TotalDays".into(), Ty::Float);
+    ts.properties.insert("Ms".into(), Ty::Long);
+    ts.properties.insert("Milliseconds".into(), Ty::Int);
+    ts.properties.insert("Seconds".into(), Ty::Int);
+    ts.properties.insert("Minutes".into(), Ty::Int);
+    ts.properties.insert("Hours".into(), Ty::Int);
+    ts.properties.insert("Days".into(), Ty::Int);
+    ts.methods.insert(
+        "FromSeconds".into(),
+        method("FromSeconds", vec![("s", Ty::Float)], Ty::Named("TimeSpan".into()), true),
+    );
+    ts.methods.insert(
+        "FromMinutes".into(),
+        method("FromMinutes", vec![("m", Ty::Float)], Ty::Named("TimeSpan".into()), true),
+    );
+    ts.methods.insert(
+        "FromHours".into(),
+        method("FromHours", vec![("h", Ty::Float)], Ty::Named("TimeSpan".into()), true),
+    );
+    ts.methods.insert(
+        "FromMilliseconds".into(),
+        method("FromMilliseconds", vec![("ms", Ty::Float)], Ty::Named("TimeSpan".into()), true),
+    );
+    ts.methods.insert(
+        "ToString".into(),
+        method("ToString", vec![], Ty::String, false),
+    );
+    types.insert("TimeSpan".into(), ts);
 
     let mut json = empty_class("Json");
     json.methods.insert(

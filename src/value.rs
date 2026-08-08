@@ -300,12 +300,11 @@ pub fn binary_op(op: &str, left: &Value, right: &Value) -> RuntimeResult<Value> 
             }
         }
         "/" => {
-            let rf = right.as_float()?;
-            if rf == 0.0 {
-                return Err(RuntimeError::DivisionByZero);
-            }
             if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-                Ok(Value::Float(left.as_float()? / rf))
+                let lf = left.as_float()?;
+                let rf = right.as_float()?;
+                // IEEE 754: x/0.0 = ±Inf, 0.0/0.0 = NaN — let the CPU handle it
+                Ok(Value::Float(lf / rf))
             } else {
                 let ri = right.as_int()?;
                 if ri == 0 {

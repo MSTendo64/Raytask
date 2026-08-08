@@ -1553,18 +1553,50 @@ impl Parser {
         let body = self.parse_block()?;
         let mut catches = Vec::new();
         while self.match_kind(&[TokenKind::Catch]) {
-            self.expect(TokenKind::LParen, "expected '('")?;
-            let exception_type = if self.check(&TokenKind::RParen) {
-                None
+            // Support: catch, catch (name), catch (name: Type), catch (Type name), catch (Type)
+            let (exception_type, name) = if self.check(&TokenKind::LParen) {
+                self.advance();
+                if self.check(&TokenKind::RParen) {
+                    self.advance();
+                    (None, None)
+                } else if self.check_ident() {
+                    match self.peek_kind(1) {
+                        Some(TokenKind::Colon) => {
+                            // catch (name: Type)
+                            let (n, _) = self.expect_ident()?;
+                            self.advance(); // ':'
+                            let ty = self.parse_type_ref()?;
+                            self.expect(TokenKind::RParen, "expected ')'")?;
+                            (Some(ty), Some(n))
+                        }
+                        Some(TokenKind::RParen) => {
+                            // catch (name)
+                            let (n, _) = self.expect_ident()?;
+                            self.advance(); // ')'
+                            (None, Some(n))
+                        }
+                        _ => {
+                            // catch (Type ...)
+                            let ty = self.parse_type_ref()?;
+                            let n = if self.check_ident() {
+                                Some(self.expect_ident()?.0)
+                            } else {
+                                None
+                            };
+                            self.expect(TokenKind::RParen, "expected ')'")?;
+                            (Some(ty), n)
+                        }
+                    }
+                } else {
+                    // catch (Type)
+                    let ty = self.parse_type_ref()?;
+                    self.expect(TokenKind::RParen, "expected ')'")?;
+                    (Some(ty), None)
+                }
             } else {
-                Some(self.parse_type_ref()?)
+                // catch { ... } — bare catch without parens
+                (None, None)
             };
-            let name = if self.check_ident() {
-                Some(self.expect_ident()?.0)
-            } else {
-                None
-            };
-            self.expect(TokenKind::RParen, "expected ')'")?;
             let catch_body = self.parse_block()?;
             catches.push(CatchClause {
                 exception_type,
