@@ -1413,8 +1413,10 @@ impl Parser {
             if self.match_kind(&[TokenKind::Case]) {
                 // Parse one or more patterns separated by `|`
                 let mut patterns = Vec::new();
+
                 loop {
-                    let pat_expr = self.parse_expression()?;
+                    // Use parse_unary to avoid parsing `|` as a binary OR operator
+                    let pat_expr = self.parse_unary()?;
                     // Check for range `..` (two dots)
                     if self.check(&TokenKind::DotDot) {
                         self.advance();
@@ -1430,8 +1432,20 @@ impl Parser {
                         break;
                     }
                 }
-                // Optional binding: `case 42 x:`  (bind matched value to `x`)
-                let pattern_bind = if self.check_ident()
+
+                // Detect `case <ident> when ...` — bare ident is a binding, not a pattern
+                let pattern_bind = if patterns.len() == 1
+                    && matches!(&patterns[0], crate::ast::SwitchPattern::Expr(Expr::Ident(..)))
+                    && self.check_ident_str("when")
+                {
+                    // Move the ident from pattern to binding
+                    let name = match &patterns[0] {
+                        crate::ast::SwitchPattern::Expr(Expr::Ident(n, _)) => n.clone(),
+                        _ => unreachable!(),
+                    };
+                    patterns.clear(); // empty patterns = wildcard
+                    Some(name)
+                } else if self.check_ident()
                     && !self.check_ident_str("when")
                     && !self.check(&TokenKind::Colon)
                     && !self.is_keyword_current()
@@ -2375,8 +2389,16 @@ impl Parser {
                 Some(TokenKind::Ident(_))
                     | Some(TokenKind::LParen)
                     | Some(TokenKind::IntLit(_))
+                    | Some(TokenKind::UIntLit(_))
+                    | Some(TokenKind::FloatLit(_))
                     | Some(TokenKind::StringLit(_))
+                    | Some(TokenKind::RawStringLit(_))
+                    | Some(TokenKind::CharLit(_))
+                    | Some(TokenKind::BoolLit(_))
+                    | Some(TokenKind::Null)
                     | Some(TokenKind::This)
+                    | Some(TokenKind::Minus)
+                    | Some(TokenKind::Bang)
             )
     }
 

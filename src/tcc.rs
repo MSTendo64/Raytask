@@ -255,6 +255,11 @@ pub fn compile_c_to_path(
 ) -> Result<(), String> {
     let tcc = TinyCc::new()?;
     tcc.set_output_kind(kind)?;
+    // On Windows, TCC does not export DLL symbols by default — tell it to
+    // export all non-local symbols so that GetProcAddress / dlopen can find them.
+    if matches!(kind, OutputKind::Dll) && cfg!(windows) {
+        tcc.set_options("-Wl,--export-all-symbols")?;
+    }
     if debug {
         let _ = tcc.set_options("-g");
         let _ = tcc.set_options("-O0");

@@ -370,17 +370,6 @@ fn load_library(name: &str) -> RuntimeResult<()> {
 }
 
 pub fn compile_embed(embed: &FfiEmbed, work_dir: Option<&Path>) -> RuntimeResult<PathBuf> {
-    {
-        let map = embed_libs()
-            .lock()
-            .map_err(|_| RuntimeError::Message("ffi embed lock poisoned".into()))?;
-        if let Some(p) = map.get(&embed.lib_name) {
-            if p.exists() {
-                return Ok(p.clone());
-            }
-        }
-    }
-
     let dir = work_dir
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::temp_dir().join("raytask_ffi"));
@@ -388,6 +377,24 @@ pub fn compile_embed(embed: &FfiEmbed, work_dir: Option<&Path>) -> RuntimeResult
         .map_err(|e| RuntimeError::Message(format!("cannot create ffi work dir: {}", e)))?;
 
     let c_path = dir.join(format!("{}.c", embed.lib_name));
+
+    {
+        let map = embed_libs()
+            .lock()
+            .map_err(|_| RuntimeError::Message("ffi embed lock poisoned".into()))?;
+        if let Some(p) = map.get(&embed.lib_name) {
+            if p.exists() {
+                // Verify C source hasn't changed (lib_name alone can collide across tests)
+                let same = std::fs::read_to_string(&c_path)
+                    .map(|s| s == embed.source)
+                    .unwrap_or(false);
+                if same {
+                    return Ok(p.clone());
+                }
+            }
+        }
+    }
+
     std::fs::write(&c_path, &embed.source)
         .map_err(|e| RuntimeError::Message(format!("cannot write embed C: {}", e)))?;
 
@@ -417,6 +424,9 @@ pub fn compile_embed(embed: &FfiEmbed, work_dir: Option<&Path>) -> RuntimeResult
 fn compile_shared(c_path: &Path, lib_path: &Path) -> RuntimeResult<bool> {
     let c = c_path.to_string_lossy().to_string();
     let out = lib_path.to_string_lossy().to_string();
+
+    // Remove stale output so a successful compile always produces a fresh file.
+    let _ = std::fs::remove_file(lib_path);
 
     for cc in ["gcc", "clang"] {
         let mut cmd = std::process::Command::new(cc);

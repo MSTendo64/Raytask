@@ -7,6 +7,7 @@ use crate::ffi::{self, FfiEmbed, FfiModuleInfo};
 use crate::span::Span;
 use crate::value::{FunctionRef, TypeHandle, Value};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 struct Local {
@@ -433,7 +434,12 @@ impl Compiler {
                 "c" | "cembed" | "embed" => {
                     if let Some(source) = ffi::attr_string(a) {
                         self.embed_counter += 1;
-                        let lib_name = format!("raytask_embed_{}", self.embed_counter);
+                        // Include a source hash in the lib name so different
+                        // C snippets never collide in the global DLL cache.
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        source.hash(&mut h);
+                        let hash = h.finish();
+                        let lib_name = format!("raytask_embed_{}_{:016x}", self.embed_counter, hash);
                         self.module.ffi.embeds.push(FfiEmbed {
                             source,
                             lib_name: lib_name.clone(),
@@ -1147,6 +1153,22 @@ impl Compiler {
             Stmt::Decl(d) => {
                 if let Some(init) = &d.init {
                     self.compile_expr(init)?;
+                } else if let Some(ty) = &d.ty {
+                    // Auto-initialize struct/union types (value types)
+                    let is_struct = self.module.classes.iter().any(|c| {
+                        c.name == ty.name && matches!(c.kind, ClassKind::Struct | ClassKind::Union)
+                    });
+                    if is_struct {
+                        // Find the class index for NewObject
+                        if let Some(ci) = self.module.classes.iter().position(|c| c.name == ty.name) {
+                            self.chunk().emit_op(Op::NewObject, d.span.line);
+                            self.chunk().emit_byte(ci as u8, d.span.line);
+                        } else {
+                            self.chunk().emit_op(Op::Null, d.span.line);
+                        }
+                    } else {
+                        self.chunk().emit_op(Op::Null, d.span.line);
+                    }
                 } else {
                     self.chunk().emit_op(Op::Null, d.span.line);
                 }
@@ -1410,14 +1432,15 @@ impl Compiler {
                 // Switch value stays on stack top throughout all case tests.
                 let mut end_jumps: Vec<usize> = Vec::new();
                 for case in cases {
-                    if case.patterns.is_empty() {
+                    if case.patterns.is_empty() && case.guard.is_none() && case.pattern_bind.is_none() {
                         // default arm
                         self.chunk().emit_op(Op::Pop, ln); // pop switch value
                         self.compile_switch_body(&case.body, &mut end_jumps, ln)?;
-                    } else {
+                    } else if !case.patterns.is_empty() {
                         // One or more patterns: OR-them together.
                         let mut skip_jumps: Vec<usize> = Vec::new();
                         let mut next_jumps: Vec<usize> = Vec::new();
+                        let mut guard_jumps: Vec<usize> = Vec::new();
 
                         for (i, pat) in case.patterns.iter().enumerate() {
                             let is_last = i == case.patterns.len() - 1;
@@ -1437,15 +1460,14 @@ impl Compiler {
                                     }
                                 }
                                 crate::ast::SwitchPattern::Range(lo, hi) => {
-                                    self.chunk().emit_op(Op::Dup, ln);
-                                    self.compile_expr(lo)?;
-                                    self.chunk().emit_op(Op::Ge, ln);
-                                    self.chunk().emit_op(Op::Dup, ln);
-                                    let fail_lo = self.chunk().emit_jump(Op::JumpIfFalse, ln);
-                                    self.chunk().emit_op(Op::Pop, ln);
-                                    self.chunk().emit_op(Op::Dup, ln);
-                                    self.compile_expr(hi)?;
-                                    self.chunk().emit_op(Op::Le, ln);
+                                    self.chunk().emit_op(Op::Dup, ln);     // [sv, sv]
+                                    self.compile_expr(lo)?;                 // [sv, sv, lo]
+                                    self.chunk().emit_op(Op::Ge, ln);       // [sv, sv>=lo]
+                                    let fail_lo = self.chunk().emit_jump(Op::JumpIfFalse, ln); // jump if sv<lo
+                                    self.chunk().emit_op(Op::Pop, ln);      // [sv]  pop Ge bool (sv>=lo path)
+                                    self.chunk().emit_op(Op::Dup, ln);      // [sv, sv]  dup sv for hi
+                                    self.compile_expr(hi)?;                 // [sv, sv, hi]
+                                    self.chunk().emit_op(Op::Le, ln);       // [sv, sv<=hi]
                                     if is_last {
                                         let nj = self.chunk().emit_jump(Op::JumpIfFalse, ln);
                                         next_jumps.push(nj);
@@ -1455,8 +1477,14 @@ impl Compiler {
                                         skip_jumps.push(sj);
                                         self.chunk().emit_op(Op::Pop, ln);
                                     }
+                                    // Skip fail_lo cleanup in normal path
+                                    let skip_cleanup = self.chunk().emit_jump(Op::Jump, ln);
+                                    // fail_lo path: pop Ge bool, jump to next case
                                     self.chunk().patch_jump(fail_lo);
-                                    self.chunk().emit_op(Op::Pop, ln);
+                                    self.chunk().emit_op(Op::Pop, ln);      // pop Ge bool
+                                    let fj = self.chunk().emit_jump(Op::Jump, ln);
+                                    guard_jumps.push(fj);                    // skip past next_jumps Pops
+                                    self.chunk().patch_jump(skip_cleanup);
                                 }
                             }
                         }
@@ -1467,15 +1495,7 @@ impl Compiler {
                             self.chunk().emit_op(Op::Pop, ln);
                         }
 
-                        // Optional guard: `when <expr>`
-                        let guard_fail: Option<usize> = if let Some(g) = &case.guard {
-                            self.compile_expr(g)?;
-                            Some(self.chunk().emit_jump(Op::JumpIfFalse, ln))
-                        } else {
-                            None
-                        };
-
-                        // Bind switch value to name if requested
+                        // Bind switch value to name if requested (before guard so guard can use it)
                         if let Some(bind) = &case.pattern_bind {
                             self.chunk().emit_op(Op::Dup, ln);
                             let slot = self.locals.len() as u8;
@@ -1485,25 +1505,65 @@ impl Compiler {
                             self.chunk().emit_op(Op::Pop, ln);
                         }
 
+                        // Optional guard: `when <expr>` (can reference bound name)
+                        let guard_fail: Option<usize> = if let Some(g) = &case.guard {
+                            self.compile_expr(g)?;
+                            Some(self.chunk().emit_jump(Op::JumpIfFalse, ln))
+                        } else {
+                            None
+                        };
+
                         // Pop switch value, run body
                         self.chunk().emit_op(Op::Pop, ln);
                         self.compile_switch_body(&case.body, &mut end_jumps, ln)?;
                         let ej = self.chunk().emit_jump(Op::Jump, ln);
                         end_jumps.push(ej);
 
-                        // Guard fail: pop guard result + switch value, skip to end
+                        // Guard fail: pop guard result, jump to next case
                         if let Some(gf) = guard_fail {
                             self.chunk().patch_jump(gf);
-                            self.chunk().emit_op(Op::Pop, ln); // pop guard false
-                            self.chunk().emit_op(Op::Pop, ln); // pop switch value
-                            let ej2 = self.chunk().emit_jump(Op::Jump, ln);
-                            end_jumps.push(ej2);
+                            self.chunk().emit_op(Op::Pop, ln); // pop guard false from stack
+                            let nj = self.chunk().emit_jump(Op::Jump, ln);
+                            guard_jumps.push(nj);
                         }
 
                         // Patch next-case jumps
                         for nj in next_jumps {
                             self.chunk().patch_jump(nj);
                             self.chunk().emit_op(Op::Pop, ln); // pop false
+                        }
+                        // Patch guard-fail jumps — skip past pattern-fail Pops
+                        for gj in guard_jumps {
+                            self.chunk().patch_jump(gj);
+                        }
+                    } else {
+                        // Empty patterns with guard/binding (from `case v when ...`):
+                        // wildcard match — always reaches body, subject to guard.
+                        // Bind switch value to name if requested
+                        if let Some(bind) = &case.pattern_bind {
+                            self.chunk().emit_op(Op::Dup, ln);
+                            let slot = self.locals.len() as u8;
+                            self.add_local(bind);
+                            self.chunk().emit_op(Op::SetLocal, ln);
+                            self.chunk().emit_byte(slot, ln);
+                            self.chunk().emit_op(Op::Pop, ln);
+                        }
+                        // Optional guard: `when <expr>`
+                        let guard_fail: Option<usize> = if let Some(g) = &case.guard {
+                            self.compile_expr(g)?;
+                            Some(self.chunk().emit_jump(Op::JumpIfFalse, ln))
+                        } else {
+                            None
+                        };
+                        // Pop switch value, run body
+                        self.chunk().emit_op(Op::Pop, ln);
+                        self.compile_switch_body(&case.body, &mut end_jumps, ln)?;
+                        let ej = self.chunk().emit_jump(Op::Jump, ln);
+                        end_jumps.push(ej);
+                        // Guard fail: pop guard result, leave switch value for next case
+                        if let Some(gf) = guard_fail {
+                            self.chunk().patch_jump(gf);
+                            self.chunk().emit_op(Op::Pop, ln); // pop guard false
                         }
                     }
                 }
@@ -1946,7 +2006,8 @@ impl Compiler {
                     self.chunk().emit_op(Op::GetProperty, line);
                     let end = self.chunk().emit_jump(Op::Jump, line);
                     self.chunk().patch_jump(jump);
-                    self.chunk().emit_op(Op::Pop, line);
+                    self.chunk().emit_op(Op::Pop, line); // pop IsNull result (true)
+                    self.chunk().emit_op(Op::Pop, line); // pop original object
                     self.chunk().emit_op(Op::Null, line);
                     self.chunk().patch_jump(end);
                 } else {
@@ -2097,7 +2158,29 @@ impl Compiler {
                 self.chunk().patch_jump(end);
             }
             Expr::Grouped(e, _) => self.compile_expr(e)?,
-            Expr::Cast { expr, .. } => self.compile_expr(expr)?,
+            Expr::Cast { ty, expr, .. } => {
+                match (ty.name.as_str(), expr.as_ref()) {
+                    ("int", Expr::Float(n, _)) => {
+                        self.chunk().emit_constant(Value::Int(*n as i64), line);
+                    }
+                    ("long", Expr::Float(n, _)) => {
+                        self.chunk().emit_constant(Value::Int(*n as i64), line);
+                    }
+                    ("uint", Expr::Float(n, _)) => {
+                        self.chunk().emit_constant(Value::UInt(*n as u64), line);
+                    }
+                    ("byte", Expr::Float(n, _)) => {
+                        self.chunk().emit_constant(Value::Int(*n as i64 & 0xFF), line);
+                    }
+                    ("float", Expr::Int(n, _)) => {
+                        self.chunk().emit_constant(Value::Float(*n as f64), line);
+                    }
+                    ("double", Expr::Int(n, _)) => {
+                        self.chunk().emit_constant(Value::Float(*n as f64), line);
+                    }
+                    _ => self.compile_expr(expr)?,
+                }
+            }
             Expr::Await(e, _) => {
                 self.compile_expr(e)?;
                 self.chunk().emit_op(Op::Await, line);

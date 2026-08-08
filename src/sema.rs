@@ -1761,6 +1761,10 @@ impl TypeChecker {
                             }
                         }
                     }
+                    self.push_scope();
+                    if let Some(bind) = &case.pattern_bind {
+                        self.declare_local(bind, st.clone(), false, expr.span());
+                    }
                     if let Some(g) = &case.guard {
                         self.check_expr(g);
                     }
@@ -1769,6 +1773,7 @@ impl TypeChecker {
                         self.check_stmt(s);
                     }
                     self.in_loop -= 1;
+                    self.pop_scope();
                 }
             }
             Stmt::Match { expr, arms, .. } => {
