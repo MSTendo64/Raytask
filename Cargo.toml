@@ -35,7 +35,7 @@ indexmap = "2"
 colored = "3"
 walkdir = "2"
 uuid = { version = "1", features = ["v4"] }
-libloading = "0.8"
+libloading = "0.9"
 flate2 = "1"
 zstd = { version = "0.13", default-features = false }
 serde_urlencoded = "0.7.1"
